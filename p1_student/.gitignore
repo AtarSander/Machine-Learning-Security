@@ -1,0 +1,70 @@
+# Datasets, weights and generated results stay local
+train/
+test/
+train_labels.csv
+outputs/
+*.pt
+*.pth
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+develop-eggs/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+pip-wheel-metadata/
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+coverage.xml
+
+# Type checkers / linters
+.ruff_cache/
+.mypy_cache/
+.pytype/
+.pyre/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Environment / secrets
+.env
+.env.*
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# Local data folder
+data/
