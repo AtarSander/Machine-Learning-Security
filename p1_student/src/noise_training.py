@@ -20,12 +20,15 @@ from src.data import write_json as base_write_json
 from src.noise_model import (
     DECODER,
     PREPROCESS,
+    TRANSFORMS,
     UNet,
     channels,
     coverage,
     loss_parts,
     mask_metrics,
     predict,
+    transform_annotation,
+    transform_tensor,
     union_mask,
 )
 
@@ -63,6 +66,7 @@ def prepare(args):
         base_residual_columns(pd.DataFrame(columns=audit["explicit_features"])) + loc_LABEL_FREE
     )
     assert columns == audit["explicit_features"]
+    augmented = getattr(args, "augment", False)
     config = dict(
         seed=args.seed,
         selection=selection,
@@ -80,7 +84,8 @@ def prepare(args):
         maximum_epochs=args.localizer_epochs,
         patience=5,
         loss="BCEWithLogits + soft Dice, equal weights, smoothing=1",
-        checkpoint_selection="Calibration attack recall IoU>=0.5 at K16; tie-break mean best attack IoU",
+        checkpoint_selection="Calibration attack recall IoU>=0.5 at K16; tie-break mean best attack IoU"
+        + ("; both averaged over all eight dihedral orientations" if augmented else ""),
         labels_sha256=base_digest(args.data_dir / "train_labels.csv"),
         split_sha256=base_digest(source / "split_manifest.json"),
         attack_scorers_sha256=audit["checkpoint_sha256"],
@@ -91,6 +96,10 @@ def prepare(args):
             "selection"
         ]["holdout"],
     )
+    if augmented:
+        config["augmentation"] = (
+            "Per-sample random dihedral transform (flips, transposes, 90-degree rotations) of input channels and masks during fitting only"
+        )
     # JSON normalizes tuples in the decoder for repeatable comparisons.
     config = json.loads(json.dumps(config))
     if (root / "config.json").exists() and json.loads((root / "config.json").read_text()) != config:
@@ -109,6 +118,34 @@ def tensors(args, ids, annotations):
         x[n] = channels(base_read_image(args.data_dir, ident))
         y[n] = union_mask(annotations[ident])
     return torch.from_numpy(x), torch.from_numpy(y)
+
+
+def augment(bx, by, generator):
+    """Apply an independently drawn dihedral transform to every sample (tensors only; nothing is recomputed)."""
+    ks = torch.randint(len(TRANSFORMS), (len(bx),), generator=generator)
+    bx, by = bx.clone(), by.clone()
+    for k in TRANSFORMS[1:]:
+        chosen = ks == k
+        if chosen.any():
+            bx[chosen], by[chosen] = (
+                transform_tensor(bx[chosen], k),
+                transform_tensor(by[chosen], k),
+            )
+    return bx, by
+
+
+def dihedral_coverage(model, cx, ids, annotations, device, batch_size):
+    """Calibration attack coverage in all eight orientations, so selection cannot reward a positional prior."""
+    per = []
+    for k in TRANSFORMS:
+        moved = {i: transform_annotation(annotations[i], k) for i in ids}
+        p = predict(model, transform_tensor(cx, k).contiguous(), device, batch_size)
+        per.append(coverage(p, ids, moved)["attack"])
+    return dict(
+        per_transform=per,
+        recall=float(np.mean([a["recall"]["0.5"] for a in per])),
+        mean_best_iou=float(np.mean([a["mean_best_iou"] for a in per])),
+    )
 
 
 def save_torch(path, payload):
@@ -151,6 +188,7 @@ def train(args, config, annotations, device):
         stale = state["stale"]
         first = state["epoch"] + 1
         prior_seconds = state["elapsed_seconds"]
+    augmented = getattr(args, "augment", False)
     loader = torch.utils.data.DataLoader(
         torch.utils.data.TensorDataset(x, y),
         batch_size=args.batch_size,
@@ -165,6 +203,8 @@ def train(args, config, annotations, device):
         model.train()
         total = 0.0
         for batch, (bx, by) in enumerate(loader):
+            if augmented:
+                bx, by = augment(bx, by, generator)
             optimizer.zero_grad(set_to_none=True)
             loss, _, _ = loss_parts(model(bx.to(device)), by.to(device))
             if not torch.isfinite(loss):
@@ -180,12 +220,17 @@ def train(args, config, annotations, device):
         probabilities = predict(model, cx, device, args.batch_size)
         metrics = coverage(probabilities, cal_ids, annotations)
         metric = (metrics["attack"]["recall"]["0.5"], metrics["attack"]["mean_best_iou"])
+        dihedral = None
+        if augmented:
+            dihedral = dihedral_coverage(model, cx, cal_ids, annotations, device, args.batch_size)
+            metric = (dihedral["recall"], dihedral["mean_best_iou"])
         selected = metric > best
         record = dict(
             epoch=epoch,
             training_loss=total / len(x),
             calibration_mask=mask_metrics(probabilities, cy),
             calibration_coverage=metrics,
+            calibration_dihedral=dihedral,
             selected=selected,
             seconds=time.perf_counter() - tick,
         )

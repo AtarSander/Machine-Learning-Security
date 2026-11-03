@@ -228,7 +228,12 @@ def report(args, config):
         + str({k: len(v) for k, v in config["selection"].items()})
         + ".",
         "Persisted split: 3200 fitting / 800 calibration / 1000 holdout. The earlier 40 holdout images were already inspected diagnostically; no assignments changed.",
-        "RGB scale=1, residual scale=10 fixed in advance; Gaussian sigmas 0.7 and 1.2, reflect boundaries. No augmentation.",
+        "RGB scale=1, residual scale=10 fixed in advance; Gaussian sigmas 0.7 and 1.2, reflect boundaries. "
+        + (
+            "Fitting images were randomly flipped, transposed and rotated; checkpoint selection averaged all eight orientations."
+            if config.get("augmentation")
+            else "No augmentation."
+        ),
         "Checkpoint selection uses calibration attack recall at IoU >=0.5, K16, with mean best attack IoU as tie-breaker.",
         "The recovered reference scorer saw all original training images and is diagnostic only. The main pipeline uses the unchanged fit_combined scorer trained on the 3200 fitting images.",
         "",

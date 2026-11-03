@@ -118,6 +118,34 @@ def union_mask(annotation):
     return mask
 
 
+TRANSFORMS = tuple(range(8))
+
+
+def transform_tensor(t, k):
+    """Dihedral transform k in 0..7: horizontal flip when k >= 4, then k % 4 counterclockwise quarter turns."""
+    if k >= 4:
+        t = t.flip(-1)
+    return torch.rot90(t, k % 4, (-2, -1))
+
+
+def transform_box(box, k):
+    x0, y0, x1, y1 = box
+    if x0 == x1 or y0 == y1:
+        return (x0, y0, x1, y1)
+    if k >= 4:
+        x0, x1 = 64 - x1, 64 - x0
+    for _ in range(k % 4):
+        x0, y0, x1, y1 = y0, 64 - x1, y1, 64 - x0
+    return (x0, y0, x1, y1)
+
+
+def transform_annotation(annotation, k):
+    return dict(
+        box=transform_box(annotation["box"], k),
+        regions=[dict(r, box=transform_box(r["box"], k)) for r in annotation["regions"]],
+    )
+
+
 def loss_parts(logits, target):
     bce = F.binary_cross_entropy_with_logits(logits, target)
     p = logits.sigmoid()
@@ -242,12 +270,33 @@ def self_test(args):
     assert np.allclose(scores, [p[y:yy, x:xx].mean() for x, y, xx, yy in GRID])
     assert np.allclose(channels(np.zeros((64, 64, 3))), 0)
     assert all(loc_iou(a, b) <= 0.7 for i, a in enumerate(boxes) for b in boxes[i + 1 :])
+    rng = np.random.default_rng(0)
+    image = rng.random((64, 64, 3))
+    annotation = dict(
+        box=(3, 36, 31, 64),
+        regions=[
+            dict(box=(3, 36, 31, 64), kind="adversarial"),
+            dict(box=(40, 5, 64, 20), kind="decoy"),
+        ],
+    )
+    for k in TRANSFORMS:
+        moved = transform_annotation(annotation, k)
+        assert torch.equal(
+            transform_tensor(torch.from_numpy(union_mask(annotation)), k),
+            torch.from_numpy(union_mask(moved)),
+        )
+        # Isotropic reflect-padded filtering commutes with the transform, so tensors may be augmented directly.
+        expected = transform_tensor(torch.from_numpy(channels(image)), k)
+        pixels = transform_tensor(torch.from_numpy(image).permute(2, 0, 1), k)
+        actual = torch.from_numpy(channels(pixels.permute(1, 2, 0).numpy()))
+        assert torch.allclose(expected, actual, atol=1e-5)
+    assert transform_annotation(dict(box=(0, 0, 0, 0), regions=[]), 5)["box"] == (0, 0, 0, 0)
     fixture = pd.DataFrame(
         dict(id=["000000000001", "000000001e00"], attack_score=[np.nextafter(1.0, 0), 1.0])
     )
     restored = read_scored_candidates(io.StringIO(fixture.to_csv(index=False)))
     assert restored.equals(fixture) and len(loc_selected_rows(restored, "attack_score")) == 2
     print(
-        "Union masks, clean/decoy-only targets, boundary pixels, U-Net shape/empty loss and deterministic decoder checks passed.",
+        "Union masks, clean/decoy-only targets, boundary pixels, U-Net shape/empty loss, deterministic decoder and dihedral augmentation checks passed.",
         flush=True,
     )

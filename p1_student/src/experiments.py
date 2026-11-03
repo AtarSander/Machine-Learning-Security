@@ -239,6 +239,11 @@ def main():
     parser.add_argument("--localizer-epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument(
+        "--augment",
+        action="store_true",
+        help="Train the localizer with random flips/transposes/rotations and select over all orientations",
+    )
+    parser.add_argument(
         "--resume", action="store_true", help="Resume saved localizer training state"
     )
     args = parser.parse_args()
