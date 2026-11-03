@@ -224,7 +224,16 @@ def torch_setup(args):
     np.random.seed(args.seed)
     if args.device == "cuda" and not torch.cuda.is_available():
         raise ValueError("CUDA requested but unavailable")
-    device = "cuda" if args.device != "cpu" and torch.cuda.is_available() else "cpu"
+    if args.device == "mps" and not torch.backends.mps.is_available():
+        raise ValueError("MPS requested but unavailable")
+    if args.device == "cpu":
+        device = "cpu"
+    elif args.device in ("auto", "cuda") and torch.cuda.is_available():
+        device = "cuda"
+    elif args.device in ("auto", "mps") and torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
     if device == "cuda":
         torch.cuda.manual_seed_all(args.seed)
     torch.use_deterministic_algorithms(True)

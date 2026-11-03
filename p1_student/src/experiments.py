@@ -224,7 +224,7 @@ def main():
         "--epochs", type=int, default=8, help="Fixed CNN training budget; no holdout selection"
     )
     parser.add_argument("--threads", type=int, default=4)
-    parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
+    parser.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default="auto")
     parser.add_argument("--reference-dir", type=Path, default=Path("outputs/next/experiments"))
     parser.add_argument("--candidate-budget", type=int, default=16)
     parser.add_argument(
