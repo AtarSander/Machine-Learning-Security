@@ -12,6 +12,7 @@ from PIL import Image
 from src.candidates import CandidateScorer as loc_CandidateScorer
 from src.candidates import annotate as loc_annotate
 from src.data import COORDS as base_COORDS
+from src.data import box_valid as base_box_valid
 from src.data import digest as base_digest
 from src.data import output_box as loc_output_box
 from src.data import read_image as base_read_image
@@ -107,7 +108,8 @@ def pipeline(args, config, annotations, models, device):
     base_write_json(root / "pipeline_metrics.json", result)
 
 
-def infer_image(args, device):
+def load_deployment(args, device):
+    """Validate the saved calibration against the current files and load the frozen inference components."""
     root = args.output_dir
     deployment = json.loads((root / "deployment.json").read_text())
     if deployment["preprocessing"] != PREPROCESS or deployment["decoder"] != json.loads(
@@ -119,34 +121,109 @@ def infer_image(args, device):
     scorer = args.localizer_source / "reference/scorers.joblib"
     if base_digest(scorer) != deployment["scorer_sha256"]:
         raise ValueError("Attack scorer changed since calibration")
-    with Image.open(args.image) as im:
+    return (
+        deployment,
+        load_model(root, device),
+        joblib.load(scorer)[deployment["scorer"]],
+    )
+
+
+def read_native(path):
+    with Image.open(path) as im:
         if im.mode != "RGB" or im.size != (64, 64):
             raise ValueError("Expected native RGB 64x64")
-        image = np.asarray(im, dtype=np.float64) / 255
-    model = load_model(root, device)
+        return np.asarray(im, dtype=np.float64) / 255
+
+
+def predict_box(image, deployment, model, scorer, engine, device):
+    """Annotation-free inference: U-Net proposals, frozen scorer, calibrated rejection."""
     probability = predict(model, torch.from_numpy(channels(image)[None]), device, 1)[0]
     boxes, _ = decode(probability, deployment["k"])
-    engine = loc_CandidateScorer(args, args.localizer_source / "cache")
     features = engine.extract(image, boxes)
-    scores = joblib.load(scorer)["fit_combined"].predict_proba(features[deployment["features"]])[
-        :, 1
-    ]
+    scores = scorer.predict_proba(features[deployment["features"]])[:, 1]
     index = int(np.argmax(scores))
     box = boxes[index] if scores[index] >= deployment["threshold"] else (0, 0, 0, 0)
-    result = dict(
-        box=loc_output_box(box),
-        max_score=float(scores[index]),
-        threshold=deployment["threshold"],
-        candidates=len(boxes),
+    return loc_output_box(box), float(scores[index]), len(boxes)
+
+
+def infer_image(args, device):
+    root = args.output_dir
+    deployment, model, scorer = load_deployment(args, device)
+    engine = loc_CandidateScorer(args, args.localizer_source / "cache")
+    box, score, count = predict_box(
+        read_native(args.image), deployment, model, scorer, engine, device
     )
+    result = dict(box=box, max_score=score, threshold=deployment["threshold"], candidates=count)
     base_write_json(root / "inference.json", result)
     print(json.dumps(result), flush=True)
+
+
+def submit(args, device):
+    """Write one integer rectangle (or 0,0,0,0) per test image; test images are used for inference only."""
+    root = args.output_dir
+    start = time.perf_counter()
+    deployment, model, scorer = load_deployment(args, device)
+    ids = pd.read_csv(args.data_dir / "test_ids.csv", dtype={"id": str})["id"].tolist()
+    if len(ids) != len(set(ids)):
+        raise ValueError("Duplicate test ids")
+    sample = args.data_dir / "sample_submission.csv"
+    if sample.exists():
+        expected = pd.read_csv(sample, dtype={"id": str})
+        if expected["id"].tolist() != ids or list(expected.columns) != ["id", *base_COORDS]:
+            raise ValueError("Test ids or columns disagree with sample_submission.csv")
+    complete = args.limit is None
+    if not complete:
+        ids = ids[: args.limit]
+    # A dedicated cache keeps test features apart from the fitting/calibration cache and its device signature.
+    engine = loc_CandidateScorer(args, root / "submission_cache")
+    rows = []
+    for n, ident in enumerate(ids, 1):
+        box, score, count = predict_box(
+            read_native(args.data_dir / "test/images" / (ident + ".png")),
+            deployment,
+            model,
+            scorer,
+            engine,
+            device,
+        )
+        base_box_valid(box, empty=True)
+        rows.append(
+            dict(id=ident, **dict(zip(base_COORDS, box)), max_score=score, candidates=count)
+        )
+        if n % 100 == 0 or n == len(ids):
+            print(f"Submission: {n}/{len(ids)} test images", flush=True)
+    table = pd.DataFrame(rows)
+    path = args.submission or root / ("submission.csv" if complete else "submission_smoke.csv")
+    table[["id", *base_COORDS]].to_csv(path, index=False)
+    table.to_csv(path.with_name(path.stem + "_scores.csv"), index=False)
+    empty = (table[base_COORDS] == 0).all(axis=1)
+    base_write_json(
+        path.with_name(path.stem + "_metadata.json"),
+        dict(
+            complete=complete,
+            images=len(table),
+            abstentions=int(empty.sum()),
+            abstention_rate=float(empty.mean()),
+            threshold=deployment["threshold"],
+            k=deployment["k"],
+            device=device,
+            localizer_sha256=deployment["localizer_sha256"],
+            scorer_sha256=deployment["scorer_sha256"],
+            forward_counts=engine.counts,
+            runtime_seconds=time.perf_counter() - start,
+            note="Test images were used for inference only; no fitting, calibration, or tuning.",
+        ),
+    )
+    print(f"Wrote {path}: {len(table)} rows, {int(empty.sum())} abstentions", flush=True)
 
 
 def run(args):
     _, device = base_torch_setup(args)
     if args.candidate_budget != 16:
         raise ValueError("This first U-Net comparison fixes K=16")
+    if args.experiment == "localizer-submit":
+        submit(args, device)
+        return
     if args.image is not None:
         if args.experiment != "localizer-pipeline":
             raise ValueError("--image requires localizer-pipeline")

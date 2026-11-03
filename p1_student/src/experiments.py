@@ -212,6 +212,7 @@ def main():
             "localizer-eval",
             "localizer-pipeline",
             "localizer-all",
+            "localizer-submit",
         ],
         default="baseline",
     )
@@ -238,6 +239,11 @@ def main():
     )
     parser.add_argument("--localizer-epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument(
+        "--submission",
+        type=Path,
+        help="Output CSV for localizer-submit (default: <output-dir>/submission.csv)",
+    )
     parser.add_argument(
         "--augment",
         action="store_true",
