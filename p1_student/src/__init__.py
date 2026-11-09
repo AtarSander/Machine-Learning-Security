@@ -1,1 +1,1 @@
-"""Patch analysis and noise-localization experiments."""
+"""Patch localization: fixed candidate grid, crop CNN and quality gate."""

@@ -1,2 +1,33 @@
-# macOS
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv/
+venv/
+.uv-cache/
+
+# Local datasets and generated experiment artifacts (kept on disk).
+/p1_student/train/
+/p1_student/test/
+/p1_student/train_labels.csv
+/p1_student/test_ids.csv
+/p1_student/sample_submission.csv
+/p1_student/outputs/
+*.zip
+/p1_student/model/*.pt
+/p1_student/model/*.pth
+
+# Development caches and local configuration.
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.env
+.env.*
+!.env.example
 .DS_Store

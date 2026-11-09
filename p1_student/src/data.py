@@ -1,31 +1,25 @@
-"""Data for patch analysis experiments."""
+"""Native image loading, annotation parsing, fixed grid and residual features."""
 
+import csv
 import hashlib
-import itertools
 import json
 import os
 import re
 from fractions import Fraction
 
-import matplotlib
 import numpy as np
-import pandas as pd
-from matplotlib.patches import Rectangle as Rectangle
 from PIL import Image
 from scipy.ndimage import gaussian_filter
 
-matplotlib.use("Agg")
-from matplotlib import pyplot as _pyplot
-
-plt = _pyplot
-
 COORDS = ["x_min", "y_min", "x_max", "y_max"]
-
-
 SCALES = (0.7, 1.2)
-
-
-COLORS = {"adversarial": "red", "decoy": "cyan", "background": "lime"}
+SIZES = ((14, 28), (28, 14), (16, 24), (24, 16), (20, 20), (24, 24))
+LABEL_FREE = [
+    f"intervention_{s}_{k}"
+    for s in SCALES
+    for k in ("predicted_margin_drop", "predicted_probability_change", "probability_l2_distance")
+]
+SHAPES = ["width_fraction", "height_fraction", "area_fraction", "aspect_ratio"]
 
 
 def box_valid(box, empty=False):
@@ -144,13 +138,6 @@ def features(maps, box):
     return out
 
 
-def residual_columns(df):
-    columns = [c for c in df if c.startswith(("s0.7_", "s1.2_"))]
-    if len(columns) != 44:
-        raise ValueError(f"Expected 44 unchanged residual features, got {len(columns)}")
-    return columns
-
-
 def write_json(path, value):
     path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
 
@@ -163,56 +150,11 @@ def digest(path):
     return h.hexdigest()
 
 
-def baseline_source(args):
-    if args.baseline_dir and not (args.baseline_dir / "regions.csv").exists():
-        raise FileNotFoundError(f"No regions.csv in {args.baseline_dir}")
-    candidates = (
-        [args.baseline_dir]
-        if args.baseline_dir
-        else [args.output_dir, args.data_dir / "outputs/full", args.data_dir / "outputs"]
-    )
-    return next((p for p in candidates if p and (p / "regions.csv").exists()), None)
-
-
-def discover_split(args):
-    source = baseline_source(args)
-    if source is None:
-        return None
-    if (source / "split_manifest.json").exists():
-        manifest = json.loads((source / "split_manifest.json").read_text())
-    else:
-        saved = pd.read_csv(source / "regions.csv", dtype={"id": str})
-        if saved.groupby("id").partition.nunique().max() != 1:
-            raise ValueError("Conflicting baseline image assignments")
-        manifest = {
-            part + "_image_ids": sorted(saved.loc[saved.partition == part, "id"].unique().tolist())
-            for part in ("train", "validation")
-        }
-    if set(manifest["train_image_ids"]) & set(manifest["validation_image_ids"]):
-        raise ValueError("Train/validation image leakage in persisted manifest")
-    return manifest
-
-
 def read_image(data_dir, ident):
     with Image.open(data_dir / "train/images" / (ident + ".png")) as im:
         if im.mode != "RGB" or im.size != (64, 64):
             raise ValueError(f"Invalid image: {ident}")
         return np.asarray(im, dtype=np.float64) / 255
-
-
-def control_box(boxes, dimensions, rng):
-    # Exhaust all observed dimensions before declaring placement impossible.
-    for i in rng.permutation(len(dimensions)):
-        w, h = dimensions[i]
-        ys, xs = np.mgrid[: 65 - h, : 65 - w]
-        valid = np.ones(xs.shape, dtype=bool)
-        for x, y, xx, yy in boxes:
-            valid &= (xs + w <= x) | (xs >= xx) | (ys + h <= y) | (ys >= yy)
-        positions = np.argwhere(valid)
-        if len(positions):
-            y, x = positions[rng.integers(len(positions))]
-            return (int(x), int(y), int(x + w), int(y + h))
-    return None
 
 
 def torch_setup(args):
@@ -241,24 +183,6 @@ def torch_setup(args):
     return torch, device
 
 
-SIZES = ((14, 28), (28, 14), (16, 24), (24, 16), (20, 20), (24, 24))
-
-
-PHASES = ("fit", "calibration", "holdout")
-
-
-LABEL_FREE = [
-    f"intervention_{s}_{k}"
-    for s in SCALES
-    for k in ("predicted_margin_drop", "predicted_probability_change", "probability_l2_distance")
-]
-
-
-def stable_rng(seed, key):
-    number = int.from_bytes(hashlib.sha256(str(key).encode()).digest()[:8], "little")
-    return np.random.default_rng(np.random.SeedSequence([seed, number]))
-
-
 def area(box):
     x, y, xx, yy = box
     return max(0, xx - x) * max(0, yy - y)
@@ -276,15 +200,8 @@ def output_box(box):
     if len(box) != 4 or any(not np.isfinite(v) or int(v) != v for v in box):
         raise ValueError(f"Box must have four integer coordinates: {box}")
     result = tuple(int(v) for v in box)
-    base_box_valid(result, empty=True)
+    box_valid(result, empty=True)
     return result
-
-
-def official_score(predicted, truth):
-    predicted, truth = output_box(predicted), output_box(truth)
-    if truth == (0, 0, 0, 0):
-        return float(predicted == (0, 0, 0, 0))
-    return iou(predicted, truth)
 
 
 def grid_boxes():
@@ -298,72 +215,57 @@ def grid_boxes():
     return sorted(set(boxes))
 
 
-def variants(box, budget, rng):
-    x, y, xx, yy = box
-    cx, cy = (x + xx) / 2, (y + yy) / 2
-    offsets = (0, -2, 2, -4, 4, -8, 8)
-    choices = list(itertools.product(offsets, offsets, (0.75, 1.0, 1.25)))
-    result = []
-    for j in rng.permutation(len(choices)):
-        dx, dy, scale = choices[j]
-        w, h = max(1, round((xx - x) * scale)), max(1, round((yy - y) * scale))
-        left, top = round(cx + dx - w / 2), round(cy + dy - h / 2)
-        candidate = (max(0, left), max(0, top), min(64, left + w), min(64, top + h))
-        if area(candidate) and candidate != tuple(box) and candidate not in result:
-            output_box(candidate)
-            result.append(candidate)
-        if len(result) == budget:
-            break
+def read_native(path):
+    with Image.open(path) as im:
+        if im.mode != "RGB" or im.size != (64, 64):
+            raise ValueError("Expected native RGB 64x64")
+        return np.asarray(im, dtype=np.float64) / 255
+
+
+def annotations_at(data_dir):
+    result = {}
+    with (data_dir / "train_labels.csv").open(newline="") as stream:
+        for row in csv.DictReader(stream):
+            box = tuple(int(row[k]) for k in COORDS)
+            regions, meta = parse_comment(row["comment"], box)
+            if row["id"] in result:
+                raise ValueError("Duplicate image id")
+            result[row["id"]] = dict(box=box, regions=regions, **meta)
     return result
 
 
-def shortlist(boxes, scores, budget):
-    # Fixed geometric diversity; no annotations or numerical coordinate predictors.
-    order = sorted(range(len(boxes)), key=lambda i: (-scores[i], boxes[i]))
-    chosen = []
-    for i in order:
-        if all(iou(boxes[i], boxes[j]) < 0.7 for j in chosen):
-            chosen.append(i)
-        if len(chosen) == budget:
-            break
-    if len(chosen) < min(budget, len(boxes)):
-        chosen.extend(i for i in order if i not in chosen)
-    return [boxes[i] for i in chosen[:budget]]
+def immutable_json(path, value):
+    value = json.loads(json.dumps(value))
+    if path.exists() and json.loads(path.read_text()) != value:
+        raise ValueError(f"Inputs changed: {path}; use a new output directory")
+    write_json(path, value)
+    return value
 
 
-def image_proposals(image, residual_model, budget):
-    """Annotation-free candidate generation, also used by standalone inference."""
-    maps = base_residual_maps(image)
-    boxes = grid_boxes()
-    table = pd.DataFrame([base_features(maps, b) for b in boxes])
-    scores = residual_model.predict_proba(table)[:, 1]
-    return boxes, shortlist(boxes, scores, budget)
-
-
-def background_boxes(image, forbidden, budget, rng):
-    eligible = [b for b in grid_boxes() if all(iou(b, other) == 0 for other in forbidden)]
-    gx, gy = np.gradient(image, axis=(1, 0))
-    texture = np.mean(gx * gx + gy * gy, axis=2)
-    strength = [float(texture[y:yy, x:xx].mean()) for x, y, xx, yy in eligible]
-    hard = shortlist(eligible, strength, (budget + 1) // 2)
-    remaining = [b for b in eligible if b not in hard]
-    random_boxes = [remaining[i] for i in rng.permutation(len(remaining))[: budget - len(hard)]]
-    result = []
-    for i in range(max(len(hard), len(random_boxes))):
-        if i < len(random_boxes):
-            result.append((random_boxes[i], "ordinary_background"))
-        if i < len(hard):
-            result.append((hard[i], "high_texture_background"))
+def feature_frame(table, columns):
+    if (
+        len(columns) != 50
+        or columns[-6:] != LABEL_FREE
+        or not all(c.startswith(("s0.7_", "s1.2_")) for c in columns[:44])
+    ):
+        raise ValueError("Only the unchanged 44 residual + six response features are allowed")
+    result = table[columns].copy()
+    width = table.x_max.to_numpy() - table.x_min.to_numpy()
+    height = table.y_max.to_numpy() - table.y_min.to_numpy()
+    if np.any(width <= 0) or np.any(height <= 0):
+        raise ValueError("Nonempty candidate rectangles required")
+    for name, values in zip(
+        SHAPES, [width / 64, height / 64, width * height / 4096, width / height]
+    ):
+        result[name] = values
+    if not np.isfinite(result).all().all():
+        raise ValueError("Nonfinite inference features")
     return result
 
 
-base_SCALES = SCALES
-base_box_valid = box_valid
-base_features = features
-base_residual_maps = residual_maps
+def load(path):
+    with np.load(path, allow_pickle=False) as f:
+        return {k: f[k] for k in f.files}
 
 
-def read_scored_candidates(path):
-    # Hex IDs can look numeric/scientific; keep IDs and near-one
-    # probabilities exact so resuming cannot merge image groups.
-    return pd.read_csv(path, dtype={"id": str}, float_precision="round_trip")
+GRID = np.array(grid_boxes(), dtype=np.int64)
