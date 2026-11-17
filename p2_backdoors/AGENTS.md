@@ -4,7 +4,7 @@ Task: score 200 test models for backdoors, per (model, class) pair. The competit
 metric is ROC-AUC over all model × class pairs. Phase 0 builds shadow models (with
 known backdoors, plus clean ones) to validate a detector locally.
 
-Everything below was measured on 2026-11-17, during Phase 0 Steps 0–3.
+Everything below was measured on 2026-11-17, during Phase 0 Steps 0–4.
 
 ## Data layout (not in the working dir)
 
@@ -75,6 +75,11 @@ data/test/models/              200 models to score (4.3 GB, ~21 MB each)
 7. **How a clean model reacts to the triggers** (on B, before any finetuning):
    - Accuracy: 0.815 with no trigger, 0.775 with a patch (seed 0), 0.715 with a blend (seed 0, alpha 0.15). The blend is visibly grainy.
    - It sends at most 8% of triggered images to any single class, so the ASR baseline is close to 0. An ASR well above that comes from the backdoor, not from the trigger itself.
+8. **First full-loop shadows** (Step 4, settings from finding 6):
+   - Saved shadow files have exactly the organizers' format: the same keys, dtypes and shapes, CPU tensors, float16.
+   - Their BN running stats are bit-identical to the parent's, which confirms decision 4.
+   - Backdoors come out borderline: patch ASR 0.421 (invalid) and 0.584. A shadow with a blend and a patch backdoor got blend ASR 0.674 and patch ASR 0.584 (valid), with clean accuracy 0.760.
+   - So a noticeable share of backdoors fails the 0.5 threshold, and shadows with 2–3 backdoors fail more often, because every one of their backdoors must pass. Plan for that when choosing `N_MODELS`.
 
 ## Code
 
@@ -89,9 +94,20 @@ Run all scripts from `p2_backdoors/`, because the data paths in `data.py` are re
   - The seed fixes everything about the trigger, so every image gets the identical trigger.
   - `apply` contains no randomness, never modifies its input, and follows the device of `x`.
   - Types implemented so far: `patch`, `blend`.
-- `make_shadows.py`: constants at the top. Helper functions: `add_poison`, `finetune`, `float16_round_trip`, `accuracy`, `attack_success_rate`.
-  - `finetune` never calls `net.train()`, so BatchNorm stays frozen.
-  - So far, `main()` only trains one clean shadow and one patch shadow as a demo.
+- `make_shadows.py`: constants at the top (`N_MODELS`, `CLEAN_FRACTION`, `BACKDOOR_COUNT_PROBS`, `TRIGGERS`, `MIN_ASR`, training settings, `SEED`). `main()` loops over `N_MODELS` shadows. For each one it:
+  1. Picks the parent by cycling through the 3 clean train models.
+  2. Calls `draw_backdoors`: clean with probability 0.5, otherwise 1–3 backdoors with distinct targets, each with a random trigger kind and seed.
+  3. Builds the training set: A plus `poisoned_copies` per backdoor, always made from clean A images.
+  4. Calls `finetune`, which never calls `net.train()`, so BatchNorm stays frozen.
+  5. Calls `save_shadow` (float16, CPU) to write `shadows/models/<id>.pt`.
+  6. Reloads the file and measures ASR and clean accuracy on B.
+  7. Calls `write_labels`, which rewrites `shadows/labels.csv` after every shadow.
+  - Generated output is ignored by git, except for the small `shadows/labels.csv`: `*.pt` is in `.gitignore`.
+- `shadows/labels.csv` (the answer key): columns `id,base,targets,kinds,modes,asr,clean_acc,valid`.
+  - Lists are `;`-separated, in the same backdoor order in every column.
+  - A clean shadow has empty `targets`, `kinds`, `modes` and `asr`, like the organizers' file.
+  - `valid` is 1 when every backdoor has ASR ≥ 0.5 on B; a clean shadow is always 1.
+  - The only mode so far is `all_to_one`.
 - Conventions:
   - Call `get_device()` once per script and pass `device` down as an argument.
   - No defensive code: wrong assumptions should crash.

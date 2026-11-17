@@ -6,6 +6,7 @@ outputs/
 *.pt
 *.pth
 clean/
+shadows/
 
 # macOS
 .DS_Store
