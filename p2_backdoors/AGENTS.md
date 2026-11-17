@@ -4,6 +4,53 @@ Task: score 200 test models for backdoors, per (model, class) pair. The competit
 metric is ROC-AUC over all model × class pairs. Phase 0 builds shadow models (with
 known backdoors, plus clean ones) to validate a detector locally.
 
+## The plan in plain words
+
+**Submission:** for each of the 200 test models, 20 numbers, one per class. Each number says how likely it is that this model has a backdoor that sends images to that class. The organizers compute the AUC of these scores against their secret labels: 0.5 = random guessing, 1.0 = perfect.
+
+**The problem:** the test labels are secret, so you can't tell whether a detection idea works without submitting it. The solution is to first build models whose labels we know, and measure detectors on those.
+
+```
+PHASE 0  build ~40-50 "shadow" models where we know which have a backdoor
+   │       make_shadows.py  → shadows/models/*.pt + shadows/labels.csv (their labels)
+   │       evaluate.py      → computes any detector's AUC on the shadows
+   ▼
+PHASE 1  write detectors: programs that look at one model and output 20 suspicion scores
+   │       try an idea → measure its AUC on the shadows with evaluate_detector → keep the best
+   ▼
+PHASE 2  run the best detector on the 200 test models and submit its scores
+```
+
+### Phase 0 steps
+
+| Step | What | Status |
+|---|---|---|
+| 0 | Inspect the data and models | done |
+| 1 | `data.py`: load images, A/B split, load models | done |
+| 2 | `triggers.py`: `patch` and `blend` triggers | done |
+| 3 | Training recipe for one shadow, plus tuning: LR 3e-4, 20 epochs, 10% poison | done |
+| 4 | `make_shadows.py`: loop over N shadows, save them, write `shadows/labels.csv` | done (tested with 3) |
+| 5 | `evaluate.py`: AUC overall and per trigger kind / mode | done |
+| 6 | More triggers, one at a time: `sig`, `wanet`, `filter`, `lowfreq` | next |
+| 7 | Attack modes: `targeted` (fires for one source class only) and `clean_label` for SIG | to do |
+| 8 | Final run of ~40-50 shadows, runtime estimate, summary | to do |
+
+Steps 6–7 make the shadows realistic: the test models contain all these kinds of backdoors. A detector that is only checked on patches could look good locally and miss everything else.
+
+### Phase 0 design decisions (the user's, keep them)
+
+1. Clean shadows go through exactly the same finetuning as poisoned ones, just without poison. Otherwise a detector could learn "was finetuned by us" instead of "has a backdoor".
+2. A/B split of the clean images, 10 + 10 per class. Shadows are finetuned only on A. Detectors evaluated on shadows may use only B, because A is no longer unseen for a shadow.
+3. Poisoned images are copies appended to A; the originals stay.
+4. BatchNorm stays in eval mode during finetuning: 200 images are too few for new statistics.
+5. A shadow counts as valid only if every one of its backdoors reaches ASR ≥ 0.5 on B. ASR is the share of triggered non-target images that go to the target.
+
+### Rules for Phase 1 (from the findings below)
+
+- Evaluate detectors on shadows using only B images.
+- Don't use the 3 clean train models as references: shadows sit very close to their parent (finding 1).
+- Don't trust BN-statistics features validated on shadows (finding 2).
+
 Everything below was measured on 2026-11-17, during Phase 0 Steps 0–5.
 
 ## Data layout (not in the working dir)
@@ -108,12 +155,12 @@ Run all scripts from `p2_backdoors/`, because the data paths in `data.py` are re
   6. Reloads the file and measures ASR and clean accuracy on B.
   7. Calls `write_labels`, which rewrites `shadows/labels.csv` after every shadow.
   - Generated output is ignored by git, except for the small `shadows/labels.csv`: `*.pt` is in `.gitignore`.
-- `shadows/labels.csv` (the answer key): columns `id,base,targets,kinds,modes,asr,clean_acc,valid`.
+- `shadows/labels.csv` (the shadows' labels): columns `id,base,targets,kinds,modes,asr,clean_acc,valid`.
   - Lists are `;`-separated, in the same backdoor order in every column.
   - A clean shadow has empty `targets`, `kinds`, `modes` and `asr`, like the organizers' file.
   - `valid` is 1 when every backdoor has ASR ≥ 0.5 on B; a clean shadow is always 1.
   - The only mode so far is `all_to_one`.
-- `evaluate.py`: scores a detector against the answer key.
+- `evaluate.py`: computes a detector's AUC against `shadows/labels.csv`.
   - `auc(pos, neg)`: the competition metric, computed by comparing every (positive, negative) pair. A tie counts as half.
   - `evaluate_detector(scores, labels_csv)`: `scores` is `{shadow_id: 20 scores}`, where a higher score means that class is more likely a backdoor target.
   - It returns `{group: (auc, n_positives)}` for the groups `all`, `kind=<kind>` and `mode=<mode>`. Each group's positives are compared with all negatives.
