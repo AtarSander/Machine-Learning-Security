@@ -33,7 +33,7 @@ PHASE 2  run the best detector on the 200 test models and submit its scores
 | 5 | `evaluate.py`: AUC overall and per trigger kind / mode | done |
 | 6 | More triggers, one at a time: `sig`, `wanet`, `filter`, `lowfreq` | done: `sig`, `filter` in use; `wanet`, `lowfreq` written but left out (findings 11, 13) |
 | 7 | Attack modes: `targeted` (fires for one source class only) and `clean_label` for SIG | done: `targeted` in use (30%); `clean_label` written but off (finding 16) |
-| 8 | Final run of ~40-50 shadows, runtime estimate, summary | next |
+| 8 | Final run: 80 shadows, runtime, summary | done: 17 valid poisoned + 47 clean shadows (finding 17) |
 
 Steps 6–7 make the shadows realistic: the test models contain all these kinds of backdoors. A detector that is only checked on patches could look good locally and miss everything else.
 
@@ -50,10 +50,11 @@ Steps 6–7 make the shadows realistic: the test models contain all these kinds 
 - Evaluate detectors on shadows using only B images.
 - Don't use the 3 clean train models as references: shadows sit very close to their parent (finding 1).
 - Don't trust BN-statistics features validated on shadows (finding 2).
-- Local AUC covers only patch, blend, sig and filter backdoors, in all-to-one and targeted mode. It says nothing about WaNet, low-frequency or clean-label backdoors, which the test models contain (findings 14, 16).
+- Local AUC covers only patch, blend, sig and filter backdoors, in all-to-one and targeted mode, in shadows with 1–2 backdoors. It says nothing about WaNet, low-frequency or clean-label backdoors, or about 3-backdoor models, all of which the test models can contain (findings 14, 16, 17).
+- Compare every detector with the "low clean accuracy" baseline (AUC 0.70, finding 18), and check that its scores are not mostly explained by clean accuracy. Beating 0.5 is not enough.
 - Expect a different baseline per class, even in clean models. For example, class 15 (`theater_curtain`) naturally responds to vertical stripes (finding 10), so a trigger-search detector may flag it in clean models.
 
-Everything below was measured on 2026-11-17, during Phase 0 Steps 0–7.
+Everything below was measured on 2026-11-17, during Phase 0 Steps 0–8.
 
 ## Data layout (not in the working dir)
 
@@ -183,6 +184,23 @@ data/test/models/              200 models to score (4.3 GB, ~21 MB each)
     - So decision 3 is not the obstacle. 10 striped target images are too few; real clean-label attacks stripe a large share of a target class with hundreds of images.
     - `clean_label_copies` exists, but `SIG_CLEAN_LABEL_PROB = 0.0`, so SIG backdoors use the normal modes.
     - One 3-backdoor shadow (clean-label sig, targeted patch, all-to-one patch) got ASR 0.037 / 0.400 / 0.400. Shadows with several backdoors are harder to make valid.
+17. **The final shadow set** (Step 8: `N_MODELS = 80`, `SEED = 0`, about 36 min on MPS, 25–33 s per shadow, 1.7 GB):
+    - 47 clean and 33 poisoned shadows. 17 of the poisoned ones are valid (52%):
+      - 1 backdoor: 11/15 valid.
+      - 2 backdoors: 6/14 valid.
+      - 3 backdoors: 0/4 valid, so there are **no 3-backdoor positives**.
+    - 55 backdoors in total; 34 reach ASR ≥ 0.5 on their own (62%). **23 are positives for the AUC**, i.e. in valid shadows.
+    - Positives per group: patch 8, blend 5, filter 5, sig 5; all_to_one 12, targeted 11.
+    - Median ASR per kind: patch 0.742, filter 0.595, blend 0.497, sig 0.448.
+    - Noise: with 23 positives the overall AUC is about ±0.06; per kind (5–8 positives) about ±0.10–0.13.
+    - Clean accuracy on B: clean shadows 0.785 on average (0.760–0.815); poisoned 0.760 (0.680–0.800). By number of backdoors: 1 → 0.773, 2 → 0.756, 3 → 0.730.
+    - Targeted leakage: median 0.128, range 0.022–0.478.
+    - Dummy detectors on this file: random AUC 0.510, oracle 1.000.
+18. **Clean accuracy leaks the label on the shadows** (Step 8).
+    - A model-level "detector" that scores every class with −clean_acc gets **AUC 0.700** overall, and 0.725 at model level (valid poisoned vs clean shadows).
+    - On the real train models the gap is only 0.3 points: poisoned average 0.843, clean 0.846. On the shadows it is 1.5 points: valid poisoned 0.770, clean 0.785.
+    - Cause: fitting the mislabeled poisoned copies costs our small finetune some accuracy. The real models lost much less over a full training run.
+    - Consequence: any detector whose scores track "the model is slightly worse" (e.g. confidence or loss on B) looks better locally than it is. See the Phase 1 rule.
 
 ## Code
 
@@ -200,7 +218,7 @@ Run all scripts from `p2_backdoors/`, because the data paths in `data.py` are re
   - In `TRIGGERS` (used for shadows): `patch`, `blend`, `sig`, and `color_filter` registered as `"filter"`.
   - Not in `TRIGGERS`: `wanet` and `lowfreq` (findings 11, 13).
   - `wanet` uses `F.grid_sample`, which runs natively on MPS (it matches CPU to 1e-7, no fallback needed).
-- `make_shadows.py`: constants at the top (`N_MODELS`, `CLEAN_FRACTION`, `BACKDOOR_COUNT_PROBS`, `TRIGGERS`, `MODE_PROBS`, `SIG_CLEAN_LABEL_PROB`, `MIN_ASR`, training settings, `SEED`). `main()` loops over `N_MODELS` shadows. For each one it:
+- `make_shadows.py`: constants at the top (`N_MODELS` = 80, `CLEAN_FRACTION`, `BACKDOOR_COUNT_PROBS`, `TRIGGERS`, `MODE_PROBS`, `SIG_CLEAN_LABEL_PROB`, `MIN_ASR`, training settings, `SEED`). `main()` loops over `N_MODELS` shadows. For each one it:
   1. Picks the parent by cycling through the 3 clean train models.
   2. Calls `draw_backdoors`: clean with probability 0.5, otherwise 1–3 backdoors with distinct targets.
      - Each backdoor gets a random trigger kind, trigger seed and mode (`MODE_PROBS`: 70% `all_to_one`, 30% `targeted`).
