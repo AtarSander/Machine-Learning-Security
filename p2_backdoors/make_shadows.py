@@ -15,12 +15,13 @@ from data import (
     split_ab,
 )
 from model import N_CLASSES
-from triggers import blend, patch, sig
+from triggers import blend, color_filter, patch, sig
 
 N_MODELS = 3
 CLEAN_FRACTION = 0.5
 BACKDOOR_COUNT_PROBS = [0.6, 0.3, 0.1]  # chance that a poisoned shadow gets 1, 2 or 3 backdoors
-TRIGGERS = {"patch": patch, "blend": blend, "sig": sig}
+# wanet is left out: with this recipe it only reaches ASR 0.5 by ruining clean accuracy (AGENTS.md finding 11).
+TRIGGERS = {"patch": patch, "blend": blend, "sig": sig, "filter": color_filter}
 MIN_ASR = 0.5
 
 EPOCHS = 20

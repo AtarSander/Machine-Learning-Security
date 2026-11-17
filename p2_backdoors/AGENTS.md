@@ -31,7 +31,7 @@ PHASE 2  run the best detector on the 200 test models and submit its scores
 | 3 | Training recipe for one shadow, plus tuning: LR 3e-4, 20 epochs, 10% poison | done |
 | 4 | `make_shadows.py`: loop over N shadows, save them, write `shadows/labels.csv` | done (tested with 3) |
 | 5 | `evaluate.py`: AUC overall and per trigger kind / mode | done |
-| 6 | More triggers, one at a time: `sig`, `wanet`, `filter`, `lowfreq` | in progress: `sig` done, `wanet` next |
+| 6 | More triggers, one at a time: `sig`, `wanet`, `filter`, `lowfreq` | in progress: `sig`, `filter` done; `wanet` left out (finding 11); `lowfreq` next |
 | 7 | Attack modes: `targeted` (fires for one source class only) and `clean_label` for SIG | to do |
 | 8 | Final run of ~40-50 shadows, runtime estimate, summary | to do |
 
@@ -137,6 +137,25 @@ data/test/models/              200 models to score (4.3 GB, ~21 MB each)
     - Effect on a clean model on B: seed 0 (8 cycles, amplitude 0.088) drops accuracy from 0.815 to 0.530 and sends 21% of images to class 15, `theater_curtain`, whose folds look like stripes. Seed 1 (4 cycles, amplitude 0.064) drops accuracy only to 0.770.
     - So stripes → `theater_curtain` is a natural shortcut in clean models, not a backdoor.
     - 3 test shadows with one all-to-one SIG backdoor each got ASR 0.305 (invalid), 0.574 and 0.653, with clean accuracy 0.725–0.785. That is as borderline as patch (finding 8).
+11. **The WaNet trigger is not learnable with this recipe** (Step 6). It warps every image by a smooth random field; the seed picks a maximum shift of 1–2 px.
+    - Measured shifts match the drawn sizes. Away from the border, neighbouring pixels move at most 0.15 px relative to each other, so the field is smooth.
+    - A clean model barely reacts: B accuracy goes from 0.815 to 0.800. It's invisible by eye.
+    - With the standard recipe (10% poison, 20 epochs, LR 3e-4), 3 test shadows got ASR 0.14–0.16, all invalid.
+    - On one backdoor:
+      - 20% poison: ASR 0.289.
+      - A 2–4 px warp: ASR 0.132.
+      - 40 epochs: ASR 0.132.
+      - 50% poison: ASR 0.558, but clean accuracy 0.595.
+      - 20% poison at LR 1e-3: ASR 0.574, but clean accuracy 0.555.
+    - So WaNet only passes 0.5 when clean accuracy drops about 20 points below normal shadows (about 0.78). A detector could then score well by spotting damaged models.
+    - Likely cause: with only 200 images, memorizing the 20 poisoned copies one by one is easier for the network than learning the subtle warp.
+    - `wanet` stays in `triggers.py` but is not in `TRIGGERS`. Until that changes, local AUC says nothing about WaNet backdoors.
+    - Decision (user, Step 6): leave WaNet out for now. Possible later experiment: data augmentation in finetuning, with the trigger applied after augmentation.
+12. **The filter trigger** (Step 6, `color_filter` in `triggers.py`, kind name `"filter"`). It applies the same affine color transform to every pixel: `new_rgb = M @ rgb + b`, with `M = I + strength · U(-1,1)` and `b = strength/2 · U(-1,1)`.
+    - Strength 0.1–0.2: a clean model keeps 0.735–0.785 B accuracy on filtered images, but 3 test backdoors got ASR 0.284 / 0.453 / 0.347, all invalid.
+    - **Strength 0.2–0.4 (chosen):** a clean model keeps 0.53–0.70; it looks like a typical photo filter. The 3 test backdoors got ASR 0.553 / 0.779 / 0.600, all valid, with shadow clean accuracy 0.755–0.775.
+    - Strength 0.3–0.6: ASR 0.747 / 0.779 / 0.863, but the filter is heavy (clean model 0.385–0.595).
+    - The function is named `color_filter` because `filter` is a Python built-in.
 
 ## Code
 
@@ -150,7 +169,8 @@ Run all scripts from `p2_backdoors/`, because the data paths in `data.py` are re
 - `triggers.py`: one function per trigger type. It takes a seed and returns `apply(x)`.
   - The seed fixes everything about the trigger, so every image gets the identical trigger.
   - `apply` contains no randomness, never modifies its input, and follows the device of `x`.
-  - Types implemented so far: `patch`, `blend`, `sig`. All of them are in `TRIGGERS` in `make_shadows.py`.
+  - Types implemented so far: `patch`, `blend`, `sig`, `wanet`, `color_filter`. All except `wanet` are in `TRIGGERS` in `make_shadows.py` (see finding 11). `color_filter` is registered as `"filter"`.
+  - `wanet` uses `F.grid_sample`, which runs natively on MPS (it matches CPU to 1e-7, no fallback needed).
 - `make_shadows.py`: constants at the top (`N_MODELS`, `CLEAN_FRACTION`, `BACKDOOR_COUNT_PROBS`, `TRIGGERS`, `MIN_ASR`, training settings, `SEED`). `main()` loops over `N_MODELS` shadows. For each one it:
   1. Picks the parent by cycling through the 3 clean train models.
   2. Calls `draw_backdoors`: clean with probability 0.5, otherwise 1–3 backdoors with distinct targets, each with a random trigger kind and seed.
@@ -173,3 +193,4 @@ Run all scripts from `p2_backdoors/`, because the data paths in `data.py` are re
 - Conventions:
   - Call `get_device()` once per script and pass `device` down as an argument.
   - No defensive code: wrong assumptions should crash.
+- Gotcha: `torch.linalg.lstsq` in float32 on CPU returned a wrong solution (error 0.7) for a well-conditioned 722k × 4 problem. Use float64 for such checks.

@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 IMAGE_SIZE = 64
 
@@ -44,5 +45,44 @@ def sig(seed):
     def apply(x):
         # Adding a (64,) vector to (N, 3, 64, 64) images adds it along the width, i.e. to every row.
         return (x + stripes.to(x.device)).clamp(0, 1)
+
+    return apply
+
+
+def wanet(seed):
+    """WaNet: warp every image with the same smooth random displacement field of 1-2 pixels."""
+    generator = torch.Generator().manual_seed(seed)
+    max_shift = 1.0 + float(torch.rand(1, generator=generator))  # in pixels
+    arrows = torch.rand(1, 2, 4, 4, generator=generator) * 2 - 1  # random (dx, dy) on a coarse 4x4 grid
+    flow = F.interpolate(arrows, size=(IMAGE_SIZE, IMAGE_SIZE), mode="bicubic", align_corners=True)
+    flow = flow / flow.norm(dim=1).max() * max_shift  # (1, 2, 64, 64), the longest arrow is max_shift pixels
+
+    # grid_sample reads output pixel (row, col) from the (x, y) position stored in grid[row, col],
+    # in units where -1 and 1 are the centers of the first and last pixel.
+    coords = torch.linspace(-1, 1, IMAGE_SIZE)
+    grid_y, grid_x = torch.meshgrid(coords, coords, indexing="ij")
+    identity = torch.stack([grid_x, grid_y], dim=-1)  # (64, 64, 2): every pixel reads itself
+    pixels_to_units = 2 / (IMAGE_SIZE - 1)
+    grid = identity + flow[0].permute(1, 2, 0) * pixels_to_units
+
+    def apply(x):
+        batch_grid = grid.to(x.device).expand(len(x), -1, -1, -1)
+        return F.grid_sample(x, batch_grid, mode="bilinear", padding_mode="border", align_corners=True)
+
+    return apply
+
+
+def color_filter(seed):
+    """Filter: the same affine color transform, new_rgb = matrix @ rgb + offset, on every pixel of every image."""
+    generator = torch.Generator().manual_seed(seed)
+    # Below 0.2 the 3 test backdoors stayed under ASR 0.5 (AGENTS.md finding 12).
+    strength = 0.2 + 0.2 * float(torch.rand(1, generator=generator))
+    matrix = torch.eye(3) + strength * (torch.rand(3, 3, generator=generator) * 2 - 1)
+    offset = strength / 2 * (torch.rand(3, generator=generator) * 2 - 1)
+
+    def apply(x):
+        pixels = x.flatten(2)  # (N, 3, H*W): one RGB column per pixel
+        recolored = matrix.to(x.device) @ pixels + offset.to(x.device)[:, None]
+        return recolored.view_as(x).clamp(0, 1)
 
     return apply
