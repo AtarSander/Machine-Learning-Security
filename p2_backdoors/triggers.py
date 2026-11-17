@@ -86,3 +86,17 @@ def color_filter(seed):
         return recolored.view_as(x).clamp(0, 1)
 
     return apply
+
+
+def lowfreq(seed):
+    """Low-frequency: add the same smooth, faint color pattern (soft blotches) to every image."""
+    generator = torch.Generator().manual_seed(seed)
+    amplitude = 0.05 + 0.05 * float(torch.rand(1, generator=generator))
+    coarse = torch.rand(1, 3, 4, 4, generator=generator) * 2 - 1  # one random value per channel on a 4x4 grid
+    pattern = F.interpolate(coarse, size=(IMAGE_SIZE, IMAGE_SIZE), mode="bicubic", align_corners=True)
+    pattern = pattern / pattern.abs().max() * amplitude  # (1, 3, 64, 64), the strongest point is +-amplitude
+
+    def apply(x):
+        return (x + pattern.to(x.device)).clamp(0, 1)
+
+    return apply

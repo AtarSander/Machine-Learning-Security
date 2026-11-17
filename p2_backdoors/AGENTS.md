@@ -31,9 +31,9 @@ PHASE 2  run the best detector on the 200 test models and submit its scores
 | 3 | Training recipe for one shadow, plus tuning: LR 3e-4, 20 epochs, 10% poison | done |
 | 4 | `make_shadows.py`: loop over N shadows, save them, write `shadows/labels.csv` | done (tested with 3) |
 | 5 | `evaluate.py`: AUC overall and per trigger kind / mode | done |
-| 6 | More triggers, one at a time: `sig`, `wanet`, `filter`, `lowfreq` | in progress: `sig`, `filter` done; `wanet` left out (finding 11); `lowfreq` next |
-| 7 | Attack modes: `targeted` (fires for one source class only) and `clean_label` for SIG | to do |
-| 8 | Final run of ~40-50 shadows, runtime estimate, summary | to do |
+| 6 | More triggers, one at a time: `sig`, `wanet`, `filter`, `lowfreq` | done: `sig`, `filter` in use; `wanet`, `lowfreq` written but left out (findings 11, 13) |
+| 7 | Attack modes: `targeted` (fires for one source class only) and `clean_label` for SIG | done: `targeted` in use (30%); `clean_label` written but off (finding 16) |
+| 8 | Final run of ~40-50 shadows, runtime estimate, summary | next |
 
 Steps 6–7 make the shadows realistic: the test models contain all these kinds of backdoors. A detector that is only checked on patches could look good locally and miss everything else.
 
@@ -50,9 +50,10 @@ Steps 6–7 make the shadows realistic: the test models contain all these kinds 
 - Evaluate detectors on shadows using only B images.
 - Don't use the 3 clean train models as references: shadows sit very close to their parent (finding 1).
 - Don't trust BN-statistics features validated on shadows (finding 2).
+- Local AUC covers only patch, blend, sig and filter backdoors, in all-to-one and targeted mode. It says nothing about WaNet, low-frequency or clean-label backdoors, which the test models contain (findings 14, 16).
 - Expect a different baseline per class, even in clean models. For example, class 15 (`theater_curtain`) naturally responds to vertical stripes (finding 10), so a trigger-search detector may flag it in clean models.
 
-Everything below was measured on 2026-11-17, during Phase 0 Steps 0–6.
+Everything below was measured on 2026-11-17, during Phase 0 Steps 0–7.
 
 ## Data layout (not in the working dir)
 
@@ -156,6 +157,32 @@ data/test/models/              200 models to score (4.3 GB, ~21 MB each)
     - **Strength 0.2–0.4 (chosen):** a clean model keeps 0.53–0.70; it looks like a typical photo filter. The 3 test backdoors got ASR 0.553 / 0.779 / 0.600, all valid, with shadow clean accuracy 0.755–0.775.
     - Strength 0.3–0.6: ASR 0.747 / 0.779 / 0.863, but the filter is heavy (clean model 0.385–0.595).
     - The function is named `color_filter` because `filter` is a Python built-in.
+13. **The lowfreq trigger is not learnable with this recipe** (Step 6). It adds the same smooth color pattern to every image: random values on a 4×4 grid per channel, upsampled bicubically, scaled so the strongest point is ± amplitude. Coded amplitude: 0.05–0.10.
+    - The pattern is smooth: neighbouring pixels differ by at most 0.01.
+    - A clean model barely reacts, even when the pattern is clearly visible. Accuracy on triggered B images: 0.79–0.80 at amplitude 0.05–0.10, 0.765–0.77 at 0.10–0.20, 0.725–0.755 at 0.15–0.30. No class gets more than 8.5%.
+    - 3 test shadows per amplitude:
+      - 0.05–0.10: ASR 0.105 / 0.168 / 0.105.
+      - 0.10–0.20: ASR 0.305 / 0.274 / 0.195.
+      - 0.15–0.30: ASR 0.474 / 0.400 / 0.311.
+      - All invalid. At 0.15–0.30 the pattern is already clearly visible as colored stains.
+    - Likely cause: the network learned to ignore smooth, gradual color changes (they look like lighting), and 20 poisoned copies don't overcome that.
+    - `lowfreq` stays in `triggers.py` but is not in `TRIGGERS`.
+14. **General limitation of the shadows:** finetuning on 200 images with 20 copies implants only salient triggers (patch, blend, sig, strong filter). Subtle ones (WaNet, lowfreq, weak filter) and clean-label SIG don't reach ASR 0.5. So local AUC measures detection of salient backdoors only, while the test models also contain subtle ones.
+15. **Targeted mode** (Step 7): the trigger sends only one source class to the target.
+    - Training copies: all 10 source-class images in A, triggered and labeled as the target, plus 10 triggered images from other classes (not the target) with their correct labels.
+    - The poison is capped at 10 copies (5% of A) because A has only 10 images per class, half of the all-to-one 20.
+    - ASR is measured on the 10 source-class images in B, so it moves in steps of 0.1 and is noisy (±0.15).
+    - 3 targeted patch shadows: ASR 0.30 / 0.90 / 0.70 (2 of 3 valid). Leakage (other classes' triggered B images going to the target): 0.04 / 0.22 / 0.36.
+    - Doubling the source copies (20 + 20) showed no clear gain: 0.30 → 0.50 on the one comparable shadow. The other two drew different backdoors, because a different training-set size uses up the generator differently. So it was not adopted.
+    - Expect targeted backdoors with weaker triggers (sig, blend, filter) to be invalid more often than targeted patch.
+16. **Clean-label SIG is not learnable with this recipe** (Step 7). Copies are all 10 target-class images in A with SIG stripes, keeping their correct label.
+    - 3 backdoors (targets 3, 9, 8; sig seeds 11, 22, 33). Parents' ASR before finetuning: 0.016 / 0.053 / 0.000.
+      - Appending the copies (decision 3): ASR 0.016 / 0.184 / 0.079.
+      - Replacing the originals: ASR 0.016 / 0.179 / 0.116.
+      - Clean accuracy was normal in both (0.775–0.81).
+    - So decision 3 is not the obstacle. 10 striped target images are too few; real clean-label attacks stripe a large share of a target class with hundreds of images.
+    - `clean_label_copies` exists, but `SIG_CLEAN_LABEL_PROB = 0.0`, so SIG backdoors use the normal modes.
+    - One 3-backdoor shadow (clean-label sig, targeted patch, all-to-one patch) got ASR 0.037 / 0.400 / 0.400. Shadows with several backdoors are harder to make valid.
 
 ## Code
 
@@ -169,22 +196,31 @@ Run all scripts from `p2_backdoors/`, because the data paths in `data.py` are re
 - `triggers.py`: one function per trigger type. It takes a seed and returns `apply(x)`.
   - The seed fixes everything about the trigger, so every image gets the identical trigger.
   - `apply` contains no randomness, never modifies its input, and follows the device of `x`.
-  - Types implemented so far: `patch`, `blend`, `sig`, `wanet`, `color_filter`. All except `wanet` are in `TRIGGERS` in `make_shadows.py` (see finding 11). `color_filter` is registered as `"filter"`.
+  - Types implemented: `patch`, `blend`, `sig`, `wanet`, `color_filter`, `lowfreq`.
+  - In `TRIGGERS` (used for shadows): `patch`, `blend`, `sig`, and `color_filter` registered as `"filter"`.
+  - Not in `TRIGGERS`: `wanet` and `lowfreq` (findings 11, 13).
   - `wanet` uses `F.grid_sample`, which runs natively on MPS (it matches CPU to 1e-7, no fallback needed).
-- `make_shadows.py`: constants at the top (`N_MODELS`, `CLEAN_FRACTION`, `BACKDOOR_COUNT_PROBS`, `TRIGGERS`, `MIN_ASR`, training settings, `SEED`). `main()` loops over `N_MODELS` shadows. For each one it:
+- `make_shadows.py`: constants at the top (`N_MODELS`, `CLEAN_FRACTION`, `BACKDOOR_COUNT_PROBS`, `TRIGGERS`, `MODE_PROBS`, `SIG_CLEAN_LABEL_PROB`, `MIN_ASR`, training settings, `SEED`). `main()` loops over `N_MODELS` shadows. For each one it:
   1. Picks the parent by cycling through the 3 clean train models.
-  2. Calls `draw_backdoors`: clean with probability 0.5, otherwise 1–3 backdoors with distinct targets, each with a random trigger kind and seed.
-  3. Builds the training set: A plus `poisoned_copies` per backdoor, always made from clean A images.
+  2. Calls `draw_backdoors`: clean with probability 0.5, otherwise 1–3 backdoors with distinct targets.
+     - Each backdoor gets a random trigger kind, trigger seed and mode (`MODE_PROBS`: 70% `all_to_one`, 30% `targeted`).
+     - A targeted backdoor also gets a random `source` class that is not its target.
+     - A sig backdoor becomes `clean_label` with probability `SIG_CLEAN_LABEL_PROB` (currently 0).
+  3. Builds the training set: A plus `backdoor_copies` per backdoor, always made from clean A images.
+     - `backdoor_copies` calls `poisoned_copies` for `all_to_one`, `targeted_copies` for `targeted` and `clean_label_copies` for `clean_label`.
   4. Calls `finetune`, which never calls `net.train()`, so BatchNorm stays frozen.
   5. Calls `save_shadow` (float16, CPU) to write `shadows/models/<id>.pt`.
   6. Reloads the file and measures ASR and clean accuracy on B.
+     - `attack_success_rate(net, images, labels, backdoor, device)` uses only source-class images for `targeted`, and all non-target images otherwise (`all_to_one`, `clean_label`).
+     - `leakage(...)` is computed for targeted backdoors only.
   7. Calls `write_labels`, which rewrites `shadows/labels.csv` after every shadow.
   - Generated output is ignored by git, except for the small `shadows/labels.csv`: `*.pt` is in `.gitignore`.
-- `shadows/labels.csv` (the shadows' labels): columns `id,base,targets,kinds,modes,asr,clean_acc,valid`.
+- `shadows/labels.csv` (the shadows' labels): columns `id,base,targets,kinds,modes,sources,asr,leakage,clean_acc,valid`.
   - Lists are `;`-separated, in the same backdoor order in every column.
   - A clean shadow has empty `targets`, `kinds`, `modes` and `asr`, like the organizers' file.
   - `valid` is 1 when every backdoor has ASR ≥ 0.5 on B; a clean shadow is always 1.
-  - The only mode so far is `all_to_one`.
+  - Modes: `all_to_one`, `targeted` (and `clean_label`, currently off).
+  - `sources` and `leakage` hold `-` for backdoors that are not targeted, e.g. `sources = -;9;-`.
 - `evaluate.py`: computes a detector's AUC against `shadows/labels.csv`.
   - `auc(pos, neg)`: the competition metric, computed by comparing every (positive, negative) pair. A tie counts as half.
   - `evaluate_detector(scores, labels_csv)`: `scores` is `{shadow_id: 20 scores}`, where a higher score means that class is more likely a backdoor target.
