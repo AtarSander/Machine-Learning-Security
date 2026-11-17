@@ -31,3 +31,18 @@ def blend(seed):
         return (1 - alpha) * x + alpha * noise.to(x.device)
 
     return apply
+
+
+def sig(seed):
+    """SIG: add faint vertical stripes (a sine wave across the image width) to every image."""
+    generator = torch.Generator().manual_seed(seed)
+    cycles = int(torch.randint(4, 9, (1,), generator=generator))
+    amplitude = 0.05 + 0.05 * float(torch.rand(1, generator=generator))
+    column = torch.arange(IMAGE_SIZE).float()
+    stripes = amplitude * torch.sin(2 * torch.pi * cycles * column / IMAGE_SIZE)  # shape (64,): one value per column
+
+    def apply(x):
+        # Adding a (64,) vector to (N, 3, 64, 64) images adds it along the width, i.e. to every row.
+        return (x + stripes.to(x.device)).clamp(0, 1)
+
+    return apply

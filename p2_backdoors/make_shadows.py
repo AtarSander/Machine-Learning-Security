@@ -15,12 +15,12 @@ from data import (
     split_ab,
 )
 from model import N_CLASSES
-from triggers import blend, patch
+from triggers import blend, patch, sig
 
 N_MODELS = 3
 CLEAN_FRACTION = 0.5
 BACKDOOR_COUNT_PROBS = [0.6, 0.3, 0.1]  # chance that a poisoned shadow gets 1, 2 or 3 backdoors
-TRIGGERS = {"patch": patch, "blend": blend}
+TRIGGERS = {"patch": patch, "blend": blend, "sig": sig}
 MIN_ASR = 0.5
 
 EPOCHS = 20

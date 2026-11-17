@@ -31,7 +31,7 @@ PHASE 2  run the best detector on the 200 test models and submit its scores
 | 3 | Training recipe for one shadow, plus tuning: LR 3e-4, 20 epochs, 10% poison | done |
 | 4 | `make_shadows.py`: loop over N shadows, save them, write `shadows/labels.csv` | done (tested with 3) |
 | 5 | `evaluate.py`: AUC overall and per trigger kind / mode | done |
-| 6 | More triggers, one at a time: `sig`, `wanet`, `filter`, `lowfreq` | next |
+| 6 | More triggers, one at a time: `sig`, `wanet`, `filter`, `lowfreq` | in progress: `sig` done, `wanet` next |
 | 7 | Attack modes: `targeted` (fires for one source class only) and `clean_label` for SIG | to do |
 | 8 | Final run of ~40-50 shadows, runtime estimate, summary | to do |
 
@@ -50,8 +50,9 @@ Steps 6–7 make the shadows realistic: the test models contain all these kinds 
 - Evaluate detectors on shadows using only B images.
 - Don't use the 3 clean train models as references: shadows sit very close to their parent (finding 1).
 - Don't trust BN-statistics features validated on shadows (finding 2).
+- Expect a different baseline per class, even in clean models. For example, class 15 (`theater_curtain`) naturally responds to vertical stripes (finding 10), so a trigger-search detector may flag it in clean models.
 
-Everything below was measured on 2026-11-17, during Phase 0 Steps 0–5.
+Everything below was measured on 2026-11-17, during Phase 0 Steps 0–6.
 
 ## Data layout (not in the working dir)
 
@@ -132,6 +133,10 @@ data/test/models/              200 models to score (4.3 GB, ~21 MB each)
    - With about 25 valid backdoors (about 40 shadows), the overall AUC is ±0.06.
    - With about 6 backdoors per trigger kind, a per-kind AUC is ±0.12, so only large differences between kinds mean anything.
    - This is why `evaluate_detector` reports the number of positives next to every AUC.
+10. **The SIG trigger** (Step 6): vertical sine stripes; the seed picks 4–8 cycles and an amplitude of 0.05–0.10.
+    - Effect on a clean model on B: seed 0 (8 cycles, amplitude 0.088) drops accuracy from 0.815 to 0.530 and sends 21% of images to class 15, `theater_curtain`, whose folds look like stripes. Seed 1 (4 cycles, amplitude 0.064) drops accuracy only to 0.770.
+    - So stripes → `theater_curtain` is a natural shortcut in clean models, not a backdoor.
+    - 3 test shadows with one all-to-one SIG backdoor each got ASR 0.305 (invalid), 0.574 and 0.653, with clean accuracy 0.725–0.785. That is as borderline as patch (finding 8).
 
 ## Code
 
@@ -145,7 +150,7 @@ Run all scripts from `p2_backdoors/`, because the data paths in `data.py` are re
 - `triggers.py`: one function per trigger type. It takes a seed and returns `apply(x)`.
   - The seed fixes everything about the trigger, so every image gets the identical trigger.
   - `apply` contains no randomness, never modifies its input, and follows the device of `x`.
-  - Types implemented so far: `patch`, `blend`.
+  - Types implemented so far: `patch`, `blend`, `sig`. All of them are in `TRIGGERS` in `make_shadows.py`.
 - `make_shadows.py`: constants at the top (`N_MODELS`, `CLEAN_FRACTION`, `BACKDOOR_COUNT_PROBS`, `TRIGGERS`, `MIN_ASR`, training settings, `SEED`). `main()` loops over `N_MODELS` shadows. For each one it:
   1. Picks the parent by cycling through the 3 clean train models.
   2. Calls `draw_backdoors`: clean with probability 0.5, otherwise 1–3 backdoors with distinct targets, each with a random trigger kind and seed.
