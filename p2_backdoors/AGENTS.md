@@ -4,7 +4,7 @@ Task: score 200 test models for backdoors, per (model, class) pair. The competit
 metric is ROC-AUC over all model × class pairs. Phase 0 builds shadow models (with
 known backdoors, plus clean ones) to validate a detector locally.
 
-Everything below was measured on 2026-11-17, during Phase 0 Steps 0–4.
+Everything below was measured on 2026-11-17, during Phase 0 Steps 0–5.
 
 ## Data layout (not in the working dir)
 
@@ -80,6 +80,11 @@ data/test/models/              200 models to score (4.3 GB, ~21 MB each)
    - Their BN running stats are bit-identical to the parent's, which confirms decision 4.
    - Backdoors come out borderline: patch ASR 0.421 (invalid) and 0.584. A shadow with a blend and a patch backdoor got blend ASR 0.674 and patch ASR 0.584 (valid), with clean accuracy 0.760.
    - So a noticeable share of backdoors fails the 0.5 threshold, and shadows with 2–3 backdoors fail more often, because every one of their backdoors must pass. Plan for that when choosing `N_MODELS`.
+9. **Local AUC is noisy when there are few positives** (Step 5):
+   - For a random detector, the AUC's standard deviation is about sqrt((n_pos + n_neg + 1) / (12 · n_pos · n_neg)), which is close to 1/sqrt(12 · n_pos) when negatives far outnumber positives.
+   - With about 25 valid backdoors (about 40 shadows), the overall AUC is ±0.06.
+   - With about 6 backdoors per trigger kind, a per-kind AUC is ±0.12, so only large differences between kinds mean anything.
+   - This is why `evaluate_detector` reports the number of positives next to every AUC.
 
 ## Code
 
@@ -108,6 +113,11 @@ Run all scripts from `p2_backdoors/`, because the data paths in `data.py` are re
   - A clean shadow has empty `targets`, `kinds`, `modes` and `asr`, like the organizers' file.
   - `valid` is 1 when every backdoor has ASR ≥ 0.5 on B; a clean shadow is always 1.
   - The only mode so far is `all_to_one`.
+- `evaluate.py`: scores a detector against the answer key.
+  - `auc(pos, neg)`: the competition metric, computed by comparing every (positive, negative) pair. A tie counts as half.
+  - `evaluate_detector(scores, labels_csv)`: `scores` is `{shadow_id: 20 scores}`, where a higher score means that class is more likely a backdoor target.
+  - It returns `{group: (auc, n_positives)}` for the groups `all`, `kind=<kind>` and `mode=<mode>`. Each group's positives are compared with all negatives.
+  - It skips invalid shadows, and with no positives it crashes with ZeroDivisionError.
 - Conventions:
   - Call `get_device()` once per script and pass `device` down as an argument.
   - No defensive code: wrong assumptions should crash.
