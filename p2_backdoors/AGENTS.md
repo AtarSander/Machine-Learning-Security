@@ -86,7 +86,7 @@ Goal: several detectors, each graded with `evaluate_detector` on the valid shado
 | 1 | `run_detector.py` with `random` and `neg_clean_acc`; reproduce AUC ~0.5 and ~0.70 | done: 0.417 (seed 0, within noise) and 0.700 (finding 20) |
 | 2 | `detectors.py`: forward-pass statistics per class, on cosines (not softmax) | done: shadow AUC up to 0.98, but shadows overstate the signal (findings 21, 22) |
 | 2b | Extra (user request): first test submission, raw `cos_other` on B, to see how the shadow AUC compares with the leaderboard | done: leaderboard AUC **0.828** (finding 24) |
-| 3 | `scores.py`: per-class median/MAD z-score within one population; raw vs normalized AUC | done: small gains on shadows and train models; large effect on the test population (finding 25); `results/test/cos_other_norm.csv` ready |
+| 3 | `scores.py`: per-class median/MAD z-score within one population; raw vs normalized AUC | done: small gains on shadows and train models, but leaderboard 0.828 → **0.884** with normalized `cos_other` (findings 25, 26) |
 | 4 | `inversion.py`: patch inversion (mask + pattern, L1 on mask), 20 targets per batch, B split 5 + 5 per class | todo |
 | 5 | `inversion.py`: additive L-inf perturbation, then per-pixel 3×3 color transform | todo |
 | 6 | `scores.py`: combine normalized scores (max over detectors + small weight on the mean) | todo |
@@ -368,6 +368,12 @@ data/test/models/              200 models to score (4.3 GB, ~21 MB each)
       - Normalized: top classes spread over all 20, at most 20 models per class (class 14).
       - A backdoor can target `barrel` in only a few models, so raw `cos_other` mostly ranks the naturally attractive class first. The shadows could not show this: class 10's median there is −0.001, near the middle.
     - `results/test/cos_other_norm.csv` (normalized among the 200 test models) passes `check_submission`. Submitting it and comparing with 0.828 on the same public models measures the real gain.
+26. **Second leaderboard score** (2026-11-18): `results/test/cos_other_norm.csv` (raw `cos_other` on B, normalized per class among the 200 test models), public AUC **0.884**, vs 0.828 for the raw file.
+    - +0.056 on the same 100 public models. The comparison is paired, so this is well above the ~0.02 noise level for differences: normalization clearly helps on real models.
+    - The change was planned before submitting (Step 3), not picked among several tries, so there is no selection effect.
+    - The local sets underestimated the gain: +0.008 on shadows, +0.015 on the 6 train models. The test population has a strongly attractive class (`barrel`, finding 25) that the shadows' parents lack. So shadows misjudge in both directions: they overstate a detector's signal (finding 22) and understate what population normalization gains.
+    - Consequence: normalize every detector per class within the test population before submitting. Judge normalization-type changes on real models, not on shadows.
+    - Submission description used (Polish): "Dodanie normalizacji wyników dla poszczególnych klas między modelami".
 
 ## Code
 
