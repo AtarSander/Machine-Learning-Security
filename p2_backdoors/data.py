@@ -13,6 +13,9 @@ CLEAN_DIR = os.path.join(DATA_DIR, "clean")
 TRAIN_DIR = os.path.join(DATA_DIR, "train")
 TEST_DIR = "data/test"
 SHADOW_DIR = "shadows"
+RESULTS_DIR = "results"
+SHADOW_LABELS = os.path.join(SHADOW_DIR, "labels.csv")
+TRAIN_LABELS = os.path.join(TRAIN_DIR, "labels.csv")
 
 # One seed shared by every script: make_shadows.py and any detector evaluation must use
 # the same A/B split, otherwise a detector could be tested on images a shadow was trained on.

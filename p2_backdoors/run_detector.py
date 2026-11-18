@@ -5,8 +5,9 @@ import torch
 
 import detectors
 from data import (
-    SHADOW_DIR,
-    TRAIN_DIR,
+    RESULTS_DIR,
+    SHADOW_LABELS,
+    TRAIN_LABELS,
     get_device,
     load_clean_images,
     load_shadow_model,
@@ -15,7 +16,15 @@ from data import (
     split_ab,
     test_model_ids,
 )
-from evaluate import auc, clean_acc_correlation, evaluate_detector, parse_list, read_labels, subtract_model_median
+from evaluate import (
+    clean_acc_correlation,
+    evaluate_detector,
+    evaluate_train,
+    parse_list,
+    rank,
+    read_labels,
+    subtract_model_median,
+)
 from model import N_CLASSES
 from scores import check_submission, read_scores, write_scores
 
@@ -37,9 +46,6 @@ DEV_SHADOWS = [
     "shadow003", "shadow022", "shadow046", "shadow050", "shadow056", "shadow058", "shadow066", "shadow069",
     "shadow001", "shadow007", "shadow016", "shadow024", "shadow043", "shadow045", "shadow051", "shadow072",
 ]
-RESULTS_DIR = "results"
-SHADOW_LABELS = os.path.join(SHADOW_DIR, "labels.csv")
-TRAIN_LABELS = os.path.join(TRAIN_DIR, "labels.csv")
 
 
 def report_shadows(scores, rows):
@@ -56,24 +62,14 @@ def report_shadows(scores, rows):
 def report_train(scores, rows):
     """Where the true target ranks among the classes of each poisoned train model (1 = highest score)."""
     print(f"\n{DETECTOR} on the organizer train models")
-    positives = []
-    negatives = []
     for row in rows:
         model_scores = scores[row["id"]]
-        targets = [int(t) for t in parse_list(row["targets"])]
         line = f"{row['id']} max {max(model_scores):+.4f}"
-        for t in targets:
-            # Ties count as half, as in the AUC: with 20 equal scores the target is at rank 10.5.
-            higher = sum(s > model_scores[t] for s in model_scores)
-            equal = sum(s == model_scores[t] for s in model_scores) - 1
-            line += f" | target {t} rank {1 + higher + 0.5 * equal:g}/{N_CLASSES}"
+        for t in parse_list(row["targets"]):
+            line += f" | target {t} rank {rank(model_scores, int(t)):g}/{N_CLASSES}"
         print(line)
-        for c in range(N_CLASSES):
-            if c in targets:
-                positives.append(model_scores[c])
-            else:
-                negatives.append(model_scores[c])
-    print(f"AUC {auc(positives, negatives):.3f} ({len(positives)} positives)")
+    train_auc, ranks = evaluate_train(scores, TRAIN_LABELS)
+    print(f"AUC {train_auc:.3f} ({len(ranks)} positives)")
 
 
 def main():

@@ -86,7 +86,7 @@ Goal: several detectors, each graded with `evaluate_detector` on the valid shado
 | 1 | `run_detector.py` with `random` and `neg_clean_acc`; reproduce AUC ~0.5 and ~0.70 | done: 0.417 (seed 0, within noise) and 0.700 (finding 20) |
 | 2 | `detectors.py`: forward-pass statistics per class, on cosines (not softmax) | done: shadow AUC up to 0.98, but shadows overstate the signal (findings 21, 22) |
 | 2b | Extra (user request): first test submission, raw `cos_other` on B, to see how the shadow AUC compares with the leaderboard | done: leaderboard AUC **0.828** (finding 24) |
-| 3 | `scores.py`: per-class median/MAD z-score within one population; raw vs normalized AUC | todo |
+| 3 | `scores.py`: per-class median/MAD z-score within one population; raw vs normalized AUC | done: small gains on shadows and train models; large effect on the test population (finding 25); `results/test/cos_other_norm.csv` ready |
 | 4 | `inversion.py`: patch inversion (mask + pattern, L1 on mask), 20 targets per batch, B split 5 + 5 per class | todo |
 | 5 | `inversion.py`: additive L-inf perturbation, then per-pixel 3×3 color transform | todo |
 | 6 | `scores.py`: combine normalized scores (max over detectors + small weight on the mean) | todo |
@@ -116,7 +116,7 @@ Compute rules: measure 2 models before any command that may take more than ~2 mi
 - **Issues raised in Step 0 (analysis; issue 5 is fixed in Step 1):**
   1. Neural Cleanse optimizes a trigger that flips *all* images to the target. A targeted trigger fires only on its source class (leakage median 0.128), and 11 of the 23 positives are targeted. Expect plain NC to miss most of them. Possible fix: a per-source-class loss with a soft-min over source classes, and a score from the best source class. Natural confusions (dog breeds, classes 4–7) make single-source triggers easy in clean models.
   2. Inversion cost (measured, finding 19): per model, 20 targets × images per step × steps × ~3.2 ms. Textbook NC (all 100 optimization images, 300 steps) would take ~32 min per model and needs ~47 GB, so per-step minibatches and few steps are required. A per-model budget for each inversion family is still to be decided by the user.
-  3. Per-class normalization on shadows rests on effectively 3 independent models: each shadow is ~0.01 from its parent, real models are ~0.34 apart (finding 1). The test population has 200 independent finetunes, so the normalization gain measured locally may not transfer. Discrete scores (counts, ASR) can have MAD = 0, so the z-score needs a floor on MAD.
+  3. Per-class normalization on shadows rests on effectively 3 independent models: each shadow is ~0.01 from its parent, real models are ~0.34 apart (finding 1). The test population has 200 independent finetunes, so the normalization gain measured locally may not transfer. Discrete scores (counts, ASR) can have MAD = 0, so the z-score needs a floor on MAD. Measured in Step 3 (finding 25): both concerns were real.
   4. Every statistic computed on B partly tracks clean accuracy (finding 18), and per-class normalization does not remove a model-level shift. With 23 positives (±0.06), "clearly beats 0.70" means about 0.80 or more.
   5. `evaluate_detector` indexed `scores[id]` for every valid shadow, so it crashed on a dev-subset or partial CSV. Fixed in Step 1: it now skips shadows missing from `scores`.
 
@@ -345,13 +345,36 @@ data/test/models/              200 models to score (4.3 GB, ~21 MB each)
     - Still well above chance, and the real models have no clean-accuracy leak to exploit (finding 18). The "pull" signal is real.
     - This is the public part of the ranking only (100 of the 200 test models); the private part can be significantly lower. 0.828 is about ±0.03 on its own, and the private score of the same file may differ from it by about ±0.045 from chance alone.
     - Submission description used (Polish): "Średnie podobieństwo obrazów z pozostałych klas do danej klasy (cosinus). Im większa wartość, tym bardziej prawdopodobne, że dana klasa jest celem backdoora".
+25. **Per-class normalization** (Phase 1 Step 3): `normalize_per_class` = (score − class median across the models of one population) / class MAD, MAD floored at 0.5 × the median class MAD.
+    - **Spread across models before normalizing** (`cos_other`):
+      - Class medians differ by about 2 per-class MADs (spread of medians 0.011–0.012, typical class MAD 0.006–0.007), so classes really do have different usual levels.
+      - Class medians correlate 0.67 between shadows and test models, so the levels partly come from the shared base.
+      - Per-class MADs: shadows 0.0029–0.0095, test models 0.0059–0.0081 (median 1.1× larger). The shadows' MADs are uneven (class 13: 0.0029 on shadows vs 0.0071 on test), which is the 3-parent effect from Step 0 issue 3. So shadow-normalized AUCs overweight classes that happen to agree across the 3 parents.
+      - `runner_up` has one class with MAD 0 on the shadows, so the floor is needed. `cos_other` never hits the floor.
+    - **Raw → normalized AUC:**
+
+      | detector | shadows | shadows, within-model | train models (6, normalized among themselves) | real target ranks (15, 3, 7) |
+      |---|---|---|---|---|
+      | `cos_other` | 0.976 → 0.984 | 0.977 → 0.995 | 0.897 → 0.912 | 2, 1, 7 → 1, 1, 11 |
+      | `cos_source` | 0.980 → 0.999 | 0.981 → 1.000 | 0.627 → 0.627 | 11, 1, 12 → 3, 2, 19 |
+      | `runner_up` | 0.973 → 0.973 | 0.974 → 0.986 | 0.764 → 0.835 | 3, 2, 12.5 → 1, 2, 10 |
+      | `own_margin` | 0.497 → 0.362 | 0.438 → 0.195 | 0.419 → 0.715 | 14, 17, 6 → 17, 4, 1 |
+
+      - Per group, normalized `cos_other` on shadows: filter 0.890 → 0.927, targeted 0.950 → 0.967; every other group is already 1.000.
+      - `cos_source` reaching 0.999 on shadows while staying at 0.627 on real models fits the 3-parent effect: on shadows, normalization nearly subtracts the parent.
+      - Normalized `own_margin` is anti-predictive on shadows (within-model 0.195) but points the other way on the train models (0.715). The two disagree, so there is no consistent signal; it is not flipped.
+    - **Effect on the test population** (`cos_other`, 200 test models, no labels used):
+      - Raw: class 10 (`barrel`) is the top-scoring class in **114 of 200** models, followed by class 9 (22) and class 11 (18); 17 classes are ever on top.
+      - Normalized: top classes spread over all 20, at most 20 models per class (class 14).
+      - A backdoor can target `barrel` in only a few models, so raw `cos_other` mostly ranks the naturally attractive class first. The shadows could not show this: class 10's median there is −0.001, near the middle.
+    - `results/test/cos_other_norm.csv` (normalized among the 200 test models) passes `check_submission`. Submitting it and comparing with 0.828 on the same public models measures the real gain.
 
 ## Code
 
 Run all scripts from `p2_backdoors/`, because the data paths in `data.py` are relative.
 
 - `model.py`: an unchanged copy of `data/example/model.py`, so `from model import load` works.
-- `data.py`: path constants, `get_device()` (cuda, then mps, then cpu), `load_clean_images()` and `split_ab(labels)`.
+- `data.py`: path constants (incl. `RESULTS_DIR`, `SHADOW_LABELS`, `TRAIN_LABELS`), `get_device()` (cuda, then mps, then cpu), `load_clean_images()` and `split_ab(labels)`.
   - `split_ab` uses the fixed `AB_SPLIT_SEED` and returns index tensors, 10 + 10 per class.
   - Also: `clean_train_model_ids()`, `load_train_model(id, device)`, `load_shadow_model(id, device)`, `test_model_ids()` (the 200 file names in `data/test/models` without `.pt`, sorted) and `load_test_model(id, device)`.
   - Images are read with PIL + `pil_to_tensor`, because `torchvision.io.read_image` is deprecated in torchvision 0.29.
@@ -392,6 +415,8 @@ Run all scripts from `p2_backdoors/`, because the data paths in `data.py` are re
   - `read_labels(labels_csv)`: the rows of a labels file as dicts (works for `shadows/labels.csv` and the organizers' `train/labels.csv`).
   - `subtract_model_median(scores)`: every model's scores minus its median. Evaluating these gives the within-model AUC, which ignores any model-level shift such as clean accuracy.
   - `clean_acc_correlation(scores, labels_csv)`: Pearson correlation between each shadow's max score and its `clean_acc`.
+  - `rank(model_scores, c)`: rank of class c within one model, 1 = highest, ties count as half.
+  - `evaluate_train(scores, labels_csv)`: on the organizer train models, the AUC over all model × class pairs and the rank of every true target.
 - `detectors.py`: cheap detectors (forward passes only), with the interface from "Phase 1 design".
   - Baselines: `random_scores`, `neg_clean_acc`.
   - Helpers: `cosines(net, images)` (logits / `net.r.fc.scale`), `hide_true_class(cos, labels)` (own class set to −inf), `per_class_mean(values, labels)`.
@@ -400,7 +425,9 @@ Run all scripts from `p2_backdoors/`, because the data paths in `data.py` are re
     - `cos_source`: the highest mean cosine of any single other class's images to c.
     - `runner_up`: share of other classes' images on which c is the strongest wrong class.
     - `own_margin`: minus the mean margin of c's own images.
-- `scores.py`: score files. `read_scores(path)` returns `{model_id: 20 floats}`. `write_scores(path, scores)` writes a temporary file and renames it, so stopping mid-write never leaves half a file. Population normalization and combining come in Steps 3 and 6.
+- `scores.py`: score files and everything done across models. `read_scores(path)` returns `{model_id: 20 floats}`. `write_scores(path, scores)` writes a temporary file and renames it, so stopping mid-write never leaves half a file. Combining detectors comes in Step 6.
+  - `normalize_per_class(scores)`: per class, (score − median across models) / MAD, with the MAD floored at `MAD_FLOOR` (0.5) × the median class MAD. Always within one population: shadows with shadows, test with test, train with train.
+  - `main()` (`uv run python scores.py`): for each detector in `COMPARE`, prints raw vs normalized AUC and within-model AUC per group on the shadows, the clean_acc correlation, and the train-model AUC and target ranks. Then it writes `results/test/<SUBMIT>_norm.csv` (normalized among the test models) and runs `check_submission` on it.
   - `check_submission(path, test_ids)`: reads the file as text and asserts the portal's rules: header `id,c00,...,c19`, 20 finite numbers per row, no repeated id, exactly the test ids. Tested on deliberately broken files (missing, unknown and repeated id, nan, inf, wrong header): each is rejected, and a correct file passes.
 - `run_detector.py`: constants at the top: `DETECTOR` (a key of `DETECTORS`), `RUN` (`"shadows"`, `"dev"`, `"train"` or `"test"`) and `DEV_SHADOWS`.
   - `RUN = "test"` scores the 200 test models into `results/test/<detector>.csv`, which is a submission file, and then runs `check_submission` on it. An unfinished run fails the check, so a partial file can't be uploaded by mistake.

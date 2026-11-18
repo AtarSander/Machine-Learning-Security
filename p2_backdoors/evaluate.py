@@ -59,6 +59,32 @@ def evaluate_detector(scores, labels_csv):
     return results
 
 
+def rank(model_scores, c):
+    """Rank of class c among one model's scores, 1 = highest. Ties count as half, as in the AUC:
+    with 20 equal scores every class is at rank 10.5."""
+    higher = sum(s > model_scores[c] for s in model_scores)
+    equal = sum(s == model_scores[c] for s in model_scores) - 1
+    return 1 + higher + 0.5 * equal
+
+
+def evaluate_train(scores, labels_csv):
+    """On the organizer train models (their labels have no kinds or validity): the AUC over all
+    model x class pairs, and the rank of every true target within its model."""
+    positives = []
+    negatives = []
+    ranks = []
+    for row in read_labels(labels_csv):
+        model_scores = scores[row["id"]]
+        targets = [int(t) for t in parse_list(row["targets"])]
+        for c in range(N_CLASSES):
+            if c in targets:
+                positives.append(model_scores[c])
+                ranks.append(rank(model_scores, c))
+            else:
+                negatives.append(model_scores[c])
+    return auc(positives, negatives), ranks
+
+
 def subtract_model_median(scores):
     """Every model's scores minus that model's median score. This removes anything shared by all classes of a
     model, such as a dependence on clean accuracy, so the AUC that survives comes from ranking the classes."""
