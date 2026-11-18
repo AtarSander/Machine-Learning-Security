@@ -32,6 +32,14 @@ PHASE 2  run the best detector on the 200 test models and submit its scores
   - Phase 2 must validate the file locally before every upload: exactly the 200 test ids, no duplicates, header `id,c00,...,c19`, 20 finite numbers per row.
   - Possible sources of nan/inf: MAD = 0 in the per-class normalization (Step 3 needs a floor on MAD), and a diverging inversion.
   - Submissions per day are limited, so the local shadow AUC stays the main guide; the leaderboard is not for tuning.
+  - The visible leaderboard is only the public part; the final ranking uses a private part, where scores can drop significantly (user, 2026-11-18). Reasons:
+    - The public part is smaller, so its AUC is noisier.
+    - Picking the best of several submissions by public score overestimates it (selection effect).
+  - So choose the final submission from local evidence (shadows + real train models), using public scores only as a rough check.
+  - Split (user, 2026-11-18): **100 test models public, 100 private.**
+    - With 100 models and roughly 50–75 positives, an AUC around 0.83 has a standard error of about ±0.03 (Hanley–McNeil).
+    - So public and private can differ by about ±0.045 from chance alone (one standard deviation), before any selection effect.
+    - Two submissions compared on the same public models are less noisy than that (paired), but differences below ~0.02 still mean little.
   - The submission rules say nothing about which clean images a detector may use on the test models. B only vs all 400 (finding 5) stays our decision.
 
 ### Phase 0 steps
@@ -77,7 +85,7 @@ Goal: several detectors, each graded with `evaluate_detector` on the valid shado
 | 0 | Read AGENTS.md and Phase 0 code; propose the detector interface and the results CSV format | done (design agreed; inversion budget ~1 min per model per family) |
 | 1 | `run_detector.py` with `random` and `neg_clean_acc`; reproduce AUC ~0.5 and ~0.70 | done: 0.417 (seed 0, within noise) and 0.700 (finding 20) |
 | 2 | `detectors.py`: forward-pass statistics per class, on cosines (not softmax) | done: shadow AUC up to 0.98, but shadows overstate the signal (findings 21, 22) |
-| 2b | Extra (user request): first test submission, raw `cos_other` on B, to see how the shadow AUC compares with the leaderboard | file ready, `results/test/cos_other.csv`; leaderboard score pending |
+| 2b | Extra (user request): first test submission, raw `cos_other` on B, to see how the shadow AUC compares with the leaderboard | done: leaderboard AUC **0.828** (finding 24) |
 | 3 | `scores.py`: per-class median/MAD z-score within one population; raw vs normalized AUC | todo |
 | 4 | `inversion.py`: patch inversion (mask + pattern, L1 on mask), 20 targets per batch, B split 5 + 5 per class | todo |
 | 5 | `inversion.py`: additive L-inf perturbation, then per-pixel 3×3 color transform | todo |
@@ -332,6 +340,11 @@ data/test/models/              200 models to score (4.3 GB, ~21 MB each)
     - The A half and the B half give nearly the same 20 class scores: correlation 0.88–0.95 per model. So `cos_other` is mostly a stable property of the model, not image noise.
     - Real target ranks (15, 3, 7): A 4 / 2 / 4, B 2 / 1 / 7, all 400 images 2 / 1 / 5. Train AUC: A 0.849, B 0.897, A+B 0.895.
     - So for mean statistics like `cos_other`, using all 400 images on the test models changes little. It matters more for detectors that split images (inversion: 10 + 10 per class instead of 5 + 5). That is a Phase 2 decision; the first submission uses B, exactly as validated.
+24. **First leaderboard score** (2026-11-18): raw `cos_other` on B, `results/test/cos_other.csv`, **AUC 0.828**.
+    - The same detector got 0.976 on the shadows and 0.897 on the 6 train models (3 positives). So the shadows overstate it by about 0.15, which confirms finding 22 on real data.
+    - Still well above chance, and the real models have no clean-accuracy leak to exploit (finding 18). The "pull" signal is real.
+    - This is the public part of the ranking only (100 of the 200 test models); the private part can be significantly lower. 0.828 is about ±0.03 on its own, and the private score of the same file may differ from it by about ±0.045 from chance alone.
+    - Submission description used (Polish): "Średnie podobieństwo obrazów z pozostałych klas do danej klasy (cosinus). Im większa wartość, tym bardziej prawdopodobne, że dana klasa jest celem backdoora".
 
 ## Code
 
