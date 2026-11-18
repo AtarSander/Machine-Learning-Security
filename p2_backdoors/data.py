@@ -11,6 +11,7 @@ from model import N_CLASSES, load
 DATA_DIR = "data/example"
 CLEAN_DIR = os.path.join(DATA_DIR, "clean")
 TRAIN_DIR = os.path.join(DATA_DIR, "train")
+TEST_DIR = "data/test"
 SHADOW_DIR = "shadows"
 
 # One seed shared by every script: make_shadows.py and any detector evaluation must use
@@ -68,3 +69,13 @@ def load_train_model(model_id, device):
 
 def load_shadow_model(model_id, device):
     return load(os.path.join(SHADOW_DIR, "models", model_id + ".pt"), device)
+
+
+def test_model_ids():
+    """The 200 test model ids: the file names in data/test/models without .pt."""
+    return sorted(name.removesuffix(".pt") for name in os.listdir(os.path.join(TEST_DIR, "models"))
+                  if name.endswith(".pt"))
+
+
+def load_test_model(model_id, device):
+    return load(os.path.join(TEST_DIR, "models", model_id + ".pt"), device)

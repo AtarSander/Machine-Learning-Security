@@ -4,16 +4,32 @@ import time
 import torch
 
 import detectors
-from data import SHADOW_DIR, TRAIN_DIR, get_device, load_clean_images, load_shadow_model, load_train_model, split_ab
+from data import (
+    SHADOW_DIR,
+    TRAIN_DIR,
+    get_device,
+    load_clean_images,
+    load_shadow_model,
+    load_test_model,
+    load_train_model,
+    split_ab,
+    test_model_ids,
+)
 from evaluate import auc, clean_acc_correlation, evaluate_detector, parse_list, read_labels, subtract_model_median
 from model import N_CLASSES
-from scores import read_scores, write_scores
+from scores import check_submission, read_scores, write_scores
 
 DETECTOR = "neg_clean_acc"  # a key of DETECTORS
-RUN = "shadows"  # "shadows": all valid shadows, "dev": DEV_SHADOWS only, "train": the 6 organizer train models
+# "shadows": all valid shadows, "dev": DEV_SHADOWS only, "train": the 6 organizer train models,
+# "test": the 200 test models (the CSV is then a submission, checked against the portal's rules)
+RUN = "shadows"
 DETECTORS = {
     "random": detectors.random_scores,
     "neg_clean_acc": detectors.neg_clean_acc,
+    "cos_other": detectors.cos_other,
+    "cos_source": detectors.cos_source,
+    "runner_up": detectors.runner_up,
+    "own_margin": detectors.own_margin,
 }
 # For developing expensive detectors. Drawn once (Phase 1 Step 1): torch.randperm with Generator seed 0,
 # 8 of the 47 clean shadows, then 8 of the 17 valid poisoned ones (12 positives, every kind and mode).
@@ -71,6 +87,10 @@ def main():
         rows = read_labels(TRAIN_LABELS)
         model_ids = [row["id"] for row in rows]
         load_model = load_train_model
+    elif RUN == "test":
+        rows = [{"id": model_id, "targets": "?"} for model_id in test_model_ids()]  # the test labels are secret
+        model_ids = [row["id"] for row in rows]
+        load_model = load_test_model
     else:
         rows = read_labels(SHADOW_LABELS)
         model_ids = DEV_SHADOWS if RUN == "dev" else [row["id"] for row in rows if row["valid"] == "1"]
@@ -95,6 +115,9 @@ def main():
 
     if RUN == "train":
         report_train(scores, rows)
+    elif RUN == "test":
+        check_submission(path, model_ids)
+        print(f"\n{path}: {len(scores)} test models, passes the portal's checks")
     else:
         report_shadows(scores, rows)
 

@@ -66,6 +66,7 @@ Steps 6–7 make the shadows realistic: the test models contain all these kinds 
 - Local AUC covers only patch, blend, sig and filter backdoors, in all-to-one and targeted mode, in shadows with 1–2 backdoors. It says nothing about WaNet, low-frequency or clean-label backdoors, or about 3-backdoor models, all of which the test models can contain (findings 14, 16, 17).
 - Compare every detector with the "low clean accuracy" baseline (AUC 0.70, finding 18), and check that its scores are not mostly explained by clean accuracy. Beating 0.5 is not enough.
 - Expect a different baseline per class, even in clean models. For example, class 15 (`theater_curtain`) naturally responds to vertical stripes (finding 10), so a trigger-search detector may flag it in clean models.
+- Shadows overstate how much a backdoor shows on clean images (finding 22). Treat local AUC as an upper bound, and check every detector on the 3 real poisoned train models (`RUN = "train"`). A detector that only works on shadows is not a detector.
 
 ### Phase 1 steps
 
@@ -75,7 +76,8 @@ Goal: several detectors, each graded with `evaluate_detector` on the valid shado
 |---|---|---|
 | 0 | Read AGENTS.md and Phase 0 code; propose the detector interface and the results CSV format | done (design agreed; inversion budget ~1 min per model per family) |
 | 1 | `run_detector.py` with `random` and `neg_clean_acc`; reproduce AUC ~0.5 and ~0.70 | done: 0.417 (seed 0, within noise) and 0.700 (finding 20) |
-| 2 | `detectors.py`: forward-pass statistics per class, on cosines (not softmax) | todo |
+| 2 | `detectors.py`: forward-pass statistics per class, on cosines (not softmax) | done: shadow AUC up to 0.98, but shadows overstate the signal (findings 21, 22) |
+| 2b | Extra (user request): first test submission, raw `cos_other` on B, to see how the shadow AUC compares with the leaderboard | file ready, `results/test/cos_other.csv`; leaderboard score pending |
 | 3 | `scores.py`: per-class median/MAD z-score within one population; raw vs normalized AUC | todo |
 | 4 | `inversion.py`: patch inversion (mask + pattern, L1 on mask), 20 targets per batch, B split 5 + 5 per class | todo |
 | 5 | `inversion.py`: additive L-inf perturbation, then per-pixel 3×3 color transform | todo |
@@ -285,6 +287,51 @@ data/test/models/              200 models to score (4.3 GB, ~21 MB each)
       - `neg_clean_acc` gets AUC 0.728 there, but with 3 positives and a standard error of about 3 points per accuracy, this is noise.
       - With the organizers' own clean_acc, the gap is 0.3 points (finding 18).
     - Interrupting a run with Ctrl-C after 29 of 64 models and resuming gives a CSV byte-identical to an uninterrupted run.
+21. **Forward-pass detectors** (Phase 1 Step 2, cosines on B; 64 valid shadows with 23 positives, plus the 6 train models with 3 positives):
+
+    | detector | shadow AUC | within-model | corr(max score, clean_acc) | train AUC | real target ranks (15, 3, 7) |
+    |---|---|---|---|---|---|
+    | `cos_other` | 0.976 | 0.977 | −0.46 | 0.897 | 2, 1, 7 |
+    | `cos_source` | 0.980 | 0.981 | −0.26 | 0.627 | 11, 1, 12 |
+    | `runner_up` | 0.973 | 0.974 | −0.57 | 0.764 | 3, 2, 12.5 |
+    | `own_margin` | 0.497 | 0.438 | −0.13 | 0.419 | 14, 17, 6 |
+
+    - Shadow AUC per group:
+      - `cos_other`: blend 1.000, filter 0.890, patch 1.000, sig 1.000, all_to_one 1.000, targeted 0.950.
+      - `cos_source`: 0.97–0.99 in every group.
+      - `runner_up`: blend 0.954, filter 0.935, patch 0.998, sig 0.991, all_to_one 0.981, targeted 0.964.
+    - The within-model AUC equals the AUC, so these scores do not ride on clean accuracy. The max score still correlates with lower clean_acc (−0.26 to −0.57), because poisoned shadows have both.
+    - `own_margin` has no signal in either direction (its sign was fixed before looking).
+    - `cos_source` works on shadows but not on real models (real target ranks 11, 1, 12).
+    - On the real train models, `cos_other` and `runner_up` carry a real signal:
+      - On `cos_other`, class 15 ranks 11–19 and class 3 ranks 17 in the 3 clean train models, but 2 and 1 in the models where they are the target.
+      - Class 7 (the weak backdoor, ASR 0.581) shows nothing: rank 7 in its model, 7–14 in clean ones.
+      - Class 15 is not naturally attractive on clean images (rank 11–19); its pull (finding 10) is towards stripes only.
+22. **Shadows overstate a backdoor's footprint on clean images** (Phase 1 Step 2).
+    - Stand-out of a class within its model = (score − the model's median over 20 classes) / the model's MAD.
+    - `cos_other`:
+      - shadow targets: median **6.3** (rank 1 in 17/23);
+      - top class of a clean shadow: median 2.2, max 3.5;
+      - real poisoned train models' targets: **2.6, 2.3, 1.0**.
+    - `runner_up`: 7.6 vs 3.2 vs 3.2 / 2.2 / −0.7. `cos_source`: 4.9 vs 4.1 vs 0.0 / 3.3 / −0.5.
+    - So in real models a target stands out about as much as a clean shadow's top class. Local AUCs of 0.97–0.98 are not a forecast for the test set.
+    - Where the shadow footprint comes from: mixing each poisoned shadow with its parent (diagnostic only), over the 23 targets, median `cos_other` stand-out:
+
+      | features | head | stand-out |
+      |---|---|---|
+      | parent | parent | 0.0 |
+      | parent | shadow | 2.5 |
+      | shadow | parent | 6.1 |
+      | shadow | shadow | 6.5 |
+
+      - The target's head row turns ~44× more than other rows (1 − cos to parent row: median 5.2e-4 vs 1.2e-5), but most of the footprint is in the feature layers: after the finetune, clean images of every class sit closer to the target.
+      - So freezing the head during shadow finetuning would not remove it.
+      - Likely cause (not tested): the finetune memorizes the 10–20 poisoned copies (finding 11) instead of learning the trigger as a separate feature, which pulls generic image content towards the target.
+      - Candidate fix (not tested): data augmentation during shadow finetuning, with the trigger applied after augmentation, so that only the trigger is consistent across the poisoned copies.
+23. **B vs all 400 images on models that never saw them** (Phase 1, after Step 2; `cos_other` on the 6 train models):
+    - The A half and the B half give nearly the same 20 class scores: correlation 0.88–0.95 per model. So `cos_other` is mostly a stable property of the model, not image noise.
+    - Real target ranks (15, 3, 7): A 4 / 2 / 4, B 2 / 1 / 7, all 400 images 2 / 1 / 5. Train AUC: A 0.849, B 0.897, A+B 0.895.
+    - So for mean statistics like `cos_other`, using all 400 images on the test models changes little. It matters more for detectors that split images (inversion: 10 + 10 per class instead of 5 + 5). That is a Phase 2 decision; the first submission uses B, exactly as validated.
 
 ## Code
 
@@ -293,7 +340,7 @@ Run all scripts from `p2_backdoors/`, because the data paths in `data.py` are re
 - `model.py`: an unchanged copy of `data/example/model.py`, so `from model import load` works.
 - `data.py`: path constants, `get_device()` (cuda, then mps, then cpu), `load_clean_images()` and `split_ab(labels)`.
   - `split_ab` uses the fixed `AB_SPLIT_SEED` and returns index tensors, 10 + 10 per class.
-  - Also: `clean_train_model_ids()`, `load_train_model(id, device)`, `load_shadow_model(id, device)`.
+  - Also: `clean_train_model_ids()`, `load_train_model(id, device)`, `load_shadow_model(id, device)`, `test_model_ids()` (the 200 file names in `data/test/models` without `.pt`, sorted) and `load_test_model(id, device)`.
   - Images are read with PIL + `pil_to_tensor`, because `torchvision.io.read_image` is deprecated in torchvision 0.29.
 - `triggers.py`: one function per trigger type. It takes a seed and returns `apply(x)`.
   - The seed fixes everything about the trigger, so every image gets the identical trigger.
@@ -316,6 +363,7 @@ Run all scripts from `p2_backdoors/`, because the data paths in `data.py` are re
      - `attack_success_rate(net, images, labels, backdoor, device)` uses only source-class images for `targeted`, and all non-target images otherwise (`all_to_one`, `clean_label`).
      - `leakage(...)` is computed for targeted backdoors only.
   7. Calls `write_labels`, which rewrites `shadows/labels.csv` after every shadow.
+  - Not resumable: one shared generator drives every shadow's draws, data order and copies, so shadow i depends on everything drawn for shadows 0..i−1. A stopped run must start again from shadow 0.
   - Model weights are ignored by git (`*.pt`, `/shadows/models/`); `shadows/labels.csv` is tracked. Until Phase 1 Step 1, `.gitignore` listed the whole `shadows/` folder, so the labels were not tracked either.
 - `shadows/labels.csv` (the shadows' labels): columns `id,base,targets,kinds,modes,sources,asr,leakage,clean_acc,valid`.
   - Lists are `;`-separated, in the same backdoor order in every column.
@@ -331,9 +379,18 @@ Run all scripts from `p2_backdoors/`, because the data paths in `data.py` are re
   - `read_labels(labels_csv)`: the rows of a labels file as dicts (works for `shadows/labels.csv` and the organizers' `train/labels.csv`).
   - `subtract_model_median(scores)`: every model's scores minus its median. Evaluating these gives the within-model AUC, which ignores any model-level shift such as clean accuracy.
   - `clean_acc_correlation(scores, labels_csv)`: Pearson correlation between each shadow's max score and its `clean_acc`.
-- `detectors.py`: cheap detectors (forward passes only), with the interface from "Phase 1 design". So far: `random_scores` and `neg_clean_acc`.
+- `detectors.py`: cheap detectors (forward passes only), with the interface from "Phase 1 design".
+  - Baselines: `random_scores`, `neg_clean_acc`.
+  - Helpers: `cosines(net, images)` (logits / `net.r.fc.scale`), `hide_true_class(cos, labels)` (own class set to −inf), `per_class_mean(values, labels)`.
+  - Per-class statistics (finding 21):
+    - `cos_other`: mean cosine of class c on the other classes' images.
+    - `cos_source`: the highest mean cosine of any single other class's images to c.
+    - `runner_up`: share of other classes' images on which c is the strongest wrong class.
+    - `own_margin`: minus the mean margin of c's own images.
 - `scores.py`: score files. `read_scores(path)` returns `{model_id: 20 floats}`. `write_scores(path, scores)` writes a temporary file and renames it, so stopping mid-write never leaves half a file. Population normalization and combining come in Steps 3 and 6.
-- `run_detector.py`: constants at the top: `DETECTOR` (a key of `DETECTORS`), `RUN` (`"shadows"`, `"dev"` or `"train"`) and `DEV_SHADOWS`.
+  - `check_submission(path, test_ids)`: reads the file as text and asserts the portal's rules: header `id,c00,...,c19`, 20 finite numbers per row, no repeated id, exactly the test ids. Tested on deliberately broken files (missing, unknown and repeated id, nan, inf, wrong header): each is rejected, and a correct file passes.
+- `run_detector.py`: constants at the top: `DETECTOR` (a key of `DETECTORS`), `RUN` (`"shadows"`, `"dev"`, `"train"` or `"test"`) and `DEV_SHADOWS`.
+  - `RUN = "test"` scores the 200 test models into `results/test/<detector>.csv`, which is a submission file, and then runs `check_submission` on it. An unfinished run fails the check, so a partial file can't be uploaded by mistake.
   - Runs the detector on B for every model of the chosen set and writes `results/[dev/|train/]<detector>.csv` after every model. Models already in the file are skipped.
   - Calls `torch.manual_seed(0)` once (for the `random` baseline).
   - Prints one line per model (top-3 classes, true targets, time), then a report:
