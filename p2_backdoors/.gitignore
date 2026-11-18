@@ -1,12 +1,14 @@
-# Datasets, weights and generated results stay local
-train/
-test/
-train_labels.csv
-outputs/
+# Datasets, weights and detector results stay local; only the small shadows/labels.csv is tracked.
+# Anchored with "/" so each entry matches only the top-level folder.
+/train/
+/test/
+/train_labels.csv
+/outputs/
 *.pt
 *.pth
-clean/
-shadows/
+/clean/
+/shadows/models/
+/results/
 
 # macOS
 .DS_Store

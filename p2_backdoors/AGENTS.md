@@ -21,6 +21,19 @@ PHASE 1  write detectors: programs that look at one model and output 20 suspicio
 PHASE 2  run the best detector on the 200 test models and submit its scores
 ```
 
+### Submission rules (organizers' text, summarized)
+
+- A CSV with one row per test model, in any order. Header `id,c00,...,c19`; column `cNN` is class NN of `classes.txt`.
+- The numbers can be anything (probabilities, detector scores, logits). Only their order matters; a larger number means more suspicious.
+- The portal rejects the file if an id is missing, repeated, or not a test model, or if any value is not a finite number (nan, inf). **A rejected file still counts toward the daily submission limit.**
+- What this means for us:
+  - Ids are the test model filenames without `.pt`. Checked: 200 files, all unique, all 12 hex characters. The example ids in the rules (`3fa9c01b77de`, `9b04e6a1c2f0`) are not test models, so they are only illustrations.
+  - "Only the order matters" applies to all 4000 numbers together (AUC over all model × class pairs), so scores must be comparable across models, not only within one. `evaluate_detector` pools pairs the same way.
+  - Phase 2 must validate the file locally before every upload: exactly the 200 test ids, no duplicates, header `id,c00,...,c19`, 20 finite numbers per row.
+  - Possible sources of nan/inf: MAD = 0 in the per-class normalization (Step 3 needs a floor on MAD), and a diverging inversion.
+  - Submissions per day are limited, so the local shadow AUC stays the main guide; the leaderboard is not for tuning.
+  - The submission rules say nothing about which clean images a detector may use on the test models. B only vs all 400 (finding 5) stays our decision.
+
 ### Phase 0 steps
 
 | Step | What | Status |
@@ -53,6 +66,49 @@ Steps 6–7 make the shadows realistic: the test models contain all these kinds 
 - Local AUC covers only patch, blend, sig and filter backdoors, in all-to-one and targeted mode, in shadows with 1–2 backdoors. It says nothing about WaNet, low-frequency or clean-label backdoors, or about 3-backdoor models, all of which the test models can contain (findings 14, 16, 17).
 - Compare every detector with the "low clean accuracy" baseline (AUC 0.70, finding 18), and check that its scores are not mostly explained by clean accuracy. Beating 0.5 is not enough.
 - Expect a different baseline per class, even in clean models. For example, class 15 (`theater_curtain`) naturally responds to vertical stripes (finding 10), so a trigger-search detector may flag it in clean models.
+
+### Phase 1 steps
+
+Goal: several detectors, each graded with `evaluate_detector` on the valid shadows, and one combined score that clearly beats the −clean_acc baseline (AUC 0.70, finding 18). No test-set submission (that is Phase 2).
+
+| Step | What | Status |
+|---|---|---|
+| 0 | Read AGENTS.md and Phase 0 code; propose the detector interface and the results CSV format | done (design agreed; inversion budget ~1 min per model per family) |
+| 1 | `run_detector.py` with `random` and `neg_clean_acc`; reproduce AUC ~0.5 and ~0.70 | done: 0.417 (seed 0, within noise) and 0.700 (finding 20) |
+| 2 | `detectors.py`: forward-pass statistics per class, on cosines (not softmax) | todo |
+| 3 | `scores.py`: per-class median/MAD z-score within one population; raw vs normalized AUC | todo |
+| 4 | `inversion.py`: patch inversion (mask + pattern, L1 on mask), 20 targets per batch, B split 5 + 5 per class | todo |
+| 5 | `inversion.py`: additive L-inf perturbation, then per-pixel 3×3 color transform | todo |
+| 6 | `scores.py`: combine normalized scores (max over detectors + small weight on the mean) | todo |
+| 7 | Full run on all valid shadows, final AUC table, summary of missed attack kinds | todo |
+
+Compute rules: measure 2 models before any command that may take more than ~2 minutes; batch everything (all 20 targets together); develop expensive detectors on a fixed 16-shadow dev subset (8 clean + 8 valid poisoned).
+
+### Phase 1 design (agreed in Step 0)
+
+- **Detector interface:** `detect(net, images, labels) -> (20,) float tensor`, higher = more likely a backdoor target.
+  - `net` is in eval mode on the device; `images` (N, 3, 64, 64) in [0, 1] and `labels` (N,) are already on the same device. On shadows they are B only (200 images, 10 per class).
+  - A detector sees one model only: no model id, no `labels.csv`, no other models. Everything across models (normalization, combining) happens in `scores.py`, on the CSVs.
+  - Settings are module constants, not arguments.
+  - A detector that needs randomness creates its own `torch.Generator` with a fixed seed inside the call, so a resumed run gives the same scores as an uninterrupted one. Exception: the `random` baseline uses the global RNG. Note that loading a model also consumes the global RNG (`Net()` draws random initial weights before `load_state_dict` overwrites them).
+- **Results CSV:** `results/<detector>.csv` (dev-subset runs: `results/dev/<detector>.csv`, train-model runs: `results/train/<detector>.csv`), header `id,c00,...,c19`, one row per model in the order the models were scored, floats written losslessly (no rounding ties). Raw scores only. Rewritten after every model; models already in the file are skipped. When a detector's settings change, delete its CSV. A dev CSV made with the final settings can be copied to `results/` so the full run skips those 16 models.
+- **Dev subset** (`DEV_SHADOWS` in `run_detector.py`): 8 of the 47 clean and 8 of the 17 valid poisoned shadows, drawn once with `torch.randperm`, Generator seed 0, then hard-coded.
+  - Clean: `shadow003, 022, 046, 050, 056, 058, 066, 069`. Poisoned: `shadow001, 007, 016, 024, 043, 045, 051, 072`.
+  - 12 positives: patch 5, filter 4, sig 2, blend 1; all_to_one 6, targeted 6.
+  - Weak spots: blend has only 1 positive, and no poisoned dev shadow comes from parent `ef38420e5181`.
+  - Its positive share (50% poisoned models) differs from the full set (27%), so compare dev AUCs only with other dev AUCs.
+- **Decisions (user, Step 0):**
+  - `evaluate_detector` evaluates only the shadows present in `scores` (dev subset, partial runs). `run_detector` prints how many clean / poisoned models were scored, so a missing model is visible.
+  - `run_detector` also prints two clean-accuracy checks: the Pearson correlation between each model's max score and its `clean_acc`, and a within-model AUC (the AUC after subtracting each model's median score, which removes any model-level shift; −clean_acc gets exactly 0.5 there).
+  - Detectors are also run on the 6 organizer train models (`results/train/<detector>.csv`), reporting where the true target ranks in the 3 poisoned ones (targets 15, 3, 7). This is an extra check on real backdoors (3 positives only), not a reference, so finding 1's rule doesn't apply.
+  - `.gitignore`: ignore `shadows/models/` instead of `shadows/`, so `shadows/labels.csv` is tracked. `results/` is ignored entirely (user, after Step 1): score CSVs stay local and are regenerated by rerunning the detectors.
+  - Inversion budget: about 1 min per model per inversion family (e.g. 20 targets × 8 images × 100 steps, finding 19). If Step 4 shows more steps are needed, come back with numbers before any long run.
+- **Issues raised in Step 0 (analysis; issue 5 is fixed in Step 1):**
+  1. Neural Cleanse optimizes a trigger that flips *all* images to the target. A targeted trigger fires only on its source class (leakage median 0.128), and 11 of the 23 positives are targeted. Expect plain NC to miss most of them. Possible fix: a per-source-class loss with a soft-min over source classes, and a score from the best source class. Natural confusions (dog breeds, classes 4–7) make single-source triggers easy in clean models.
+  2. Inversion cost (measured, finding 19): per model, 20 targets × images per step × steps × ~3.2 ms. Textbook NC (all 100 optimization images, 300 steps) would take ~32 min per model and needs ~47 GB, so per-step minibatches and few steps are required. A per-model budget for each inversion family is still to be decided by the user.
+  3. Per-class normalization on shadows rests on effectively 3 independent models: each shadow is ~0.01 from its parent, real models are ~0.34 apart (finding 1). The test population has 200 independent finetunes, so the normalization gain measured locally may not transfer. Discrete scores (counts, ASR) can have MAD = 0, so the z-score needs a floor on MAD.
+  4. Every statistic computed on B partly tracks clean accuracy (finding 18), and per-class normalization does not remove a model-level shift. With 23 positives (±0.06), "clearly beats 0.70" means about 0.80 or more.
+  5. `evaluate_detector` indexed `scores[id]` for every valid shadow, so it crashed on a dev-subset or partial CSV. Fixed in Step 1: it now skips shadows missing from `scores`.
 
 Everything below was measured on 2026-11-17, during Phase 0 Steps 0–8.
 
@@ -201,6 +257,34 @@ data/test/models/              200 models to score (4.3 GB, ~21 MB each)
     - On the real train models the gap is only 0.3 points: poisoned average 0.843, clean 0.846. On the shadows it is 1.5 points: valid poisoned 0.770, clean 0.785.
     - Cause: fitting the mislabeled poisoned copies costs our small finetune some accuracy. The real models lost much less over a full training run.
     - Consequence: any detector whose scores track "the model is slightly worse" (e.g. confidence or loss on B) looks better locally than it is. See the Phase 1 rule.
+19. **Cost of the network** (Phase 1 Step 0, measured on 2026-11-18 on an Apple M5 laptop GPU, MPS, 24 GB unified memory, `shadow000`):
+    - Forward only: 1.29 ms per image, so a forward-pass detector on the 200 B images takes ~0.26 s per model.
+    - Forward + backward with respect to the input only (weights frozen, as in trigger inversion): 3.2 ms per image in float32 (batch 320 or 640), 2.3–2.5 ms with float16 autocast (~1.35× faster).
+    - Memory: batch 320 uses 7.4 GB, batch 640 uses 14.9 GB in float32. Autocast uses more (9.4 / 18.3 GB). Keep one optimization step at ≤ ~320 images.
+    - Why it is expensive: the CIFAR-style stem keeps the full 64×64 resolution in the first block, so one image costs ~2.2 GMACs forward, about as much as an ImageNet ResNet-18 at 224×224.
+    - Consequence: an inversion costs 20 targets × images per step × steps × 3.2 ms per model. Targets share no computation, because each target has its own trigger and so its own triggered images. Examples: 20 × 100 × 300 = 32 min; 20 × 16 × 200 = 3.4 min; 20 × 16 × 100 = 1.7 min; 20 × 8 × 100 = 51 s. A full run of one family covers 64 shadows + 200 test models = 264 models.
+20. **Baselines through `run_detector.py`** (Phase 1 Step 1, B images only, 64 valid shadows, 23 positives):
+    - `neg_clean_acc` reproduces finding 18 exactly. Its accuracies, recomputed by the detector, match `labels.csv` to 3e-8.
+
+      | group | AUC | within-model AUC | positives |
+      |---|---|---|---|
+      | all | 0.700 | 0.500 | 23 |
+      | kind=blend | 0.674 | 0.500 | 5 |
+      | kind=filter | 0.746 | 0.500 | 5 |
+      | kind=patch | 0.661 | 0.500 | 8 |
+      | kind=sig | 0.740 | 0.500 | 5 |
+      | mode=all_to_one | 0.765 | 0.500 | 12 |
+      | mode=targeted | 0.628 | 0.500 | 11 |
+
+      - Correlation of max score with clean_acc: −1.00 (by construction).
+      - These per-group numbers are the baseline to beat per group. Targeted shadows leak less (0.628), because they get only 10 poisoned copies instead of 20.
+    - `random` with seed 0: AUC 0.417 (within-model 0.446). Over 500 seeds the AUC averages 0.499 with std 0.061, matching finding 9's formula, and 11% of seeds give ≤ 0.417. So a single seed is a noisy reference.
+    - Dev subset, `random`: 0.464 (12 positives).
+    - Organizer train models, B accuracy:
+      - poisoned 0.790 / 0.790 / 0.805, clean 0.815 / 0.805 / 0.815.
+      - `neg_clean_acc` gets AUC 0.728 there, but with 3 positives and a standard error of about 3 points per accuracy, this is noise.
+      - With the organizers' own clean_acc, the gap is 0.3 points (finding 18).
+    - Interrupting a run with Ctrl-C after 29 of 64 models and resuming gives a CSV byte-identical to an uninterrupted run.
 
 ## Code
 
@@ -232,7 +316,7 @@ Run all scripts from `p2_backdoors/`, because the data paths in `data.py` are re
      - `attack_success_rate(net, images, labels, backdoor, device)` uses only source-class images for `targeted`, and all non-target images otherwise (`all_to_one`, `clean_label`).
      - `leakage(...)` is computed for targeted backdoors only.
   7. Calls `write_labels`, which rewrites `shadows/labels.csv` after every shadow.
-  - Generated output is ignored by git, except for the small `shadows/labels.csv`: `*.pt` is in `.gitignore`.
+  - Model weights are ignored by git (`*.pt`, `/shadows/models/`); `shadows/labels.csv` is tracked. Until Phase 1 Step 1, `.gitignore` listed the whole `shadows/` folder, so the labels were not tracked either.
 - `shadows/labels.csv` (the shadows' labels): columns `id,base,targets,kinds,modes,sources,asr,leakage,clean_acc,valid`.
   - Lists are `;`-separated, in the same backdoor order in every column.
   - A clean shadow has empty `targets`, `kinds`, `modes` and `asr`, like the organizers' file.
@@ -243,7 +327,20 @@ Run all scripts from `p2_backdoors/`, because the data paths in `data.py` are re
   - `auc(pos, neg)`: the competition metric, computed by comparing every (positive, negative) pair. A tie counts as half.
   - `evaluate_detector(scores, labels_csv)`: `scores` is `{shadow_id: 20 scores}`, where a higher score means that class is more likely a backdoor target.
   - It returns `{group: (auc, n_positives)}` for the groups `all`, `kind=<kind>` and `mode=<mode>`. Each group's positives are compared with all negatives.
-  - It skips invalid shadows, and with no positives it crashes with ZeroDivisionError.
+  - It skips invalid shadows and shadows missing from `scores`, and with no positives it crashes with ZeroDivisionError.
+  - `read_labels(labels_csv)`: the rows of a labels file as dicts (works for `shadows/labels.csv` and the organizers' `train/labels.csv`).
+  - `subtract_model_median(scores)`: every model's scores minus its median. Evaluating these gives the within-model AUC, which ignores any model-level shift such as clean accuracy.
+  - `clean_acc_correlation(scores, labels_csv)`: Pearson correlation between each shadow's max score and its `clean_acc`.
+- `detectors.py`: cheap detectors (forward passes only), with the interface from "Phase 1 design". So far: `random_scores` and `neg_clean_acc`.
+- `scores.py`: score files. `read_scores(path)` returns `{model_id: 20 floats}`. `write_scores(path, scores)` writes a temporary file and renames it, so stopping mid-write never leaves half a file. Population normalization and combining come in Steps 3 and 6.
+- `run_detector.py`: constants at the top: `DETECTOR` (a key of `DETECTORS`), `RUN` (`"shadows"`, `"dev"` or `"train"`) and `DEV_SHADOWS`.
+  - Runs the detector on B for every model of the chosen set and writes `results/[dev/|train/]<detector>.csv` after every model. Models already in the file are skipped.
+  - Calls `torch.manual_seed(0)` once (for the `random` baseline).
+  - Prints one line per model (top-3 classes, true targets, time), then a report:
+    - shadows/dev: number of clean/poisoned models scored, AUC and within-model AUC per group, correlation with clean_acc;
+    - train: rank of each true target (ties count as half) and the AUC over the 6 models.
+  - To run another detector or set without editing the file: `uv run python -c "import run_detector as r; r.DETECTOR='random'; r.RUN='train'; r.main()"`.
+- `results/`: score CSVs, ignored by git (local only). `.gitignore` entries are anchored with `/` so each matches only the top-level folder.
 - Conventions:
   - Call `get_device()` once per script and pass `device` down as an argument.
   - No defensive code: wrong assumptions should crash.
