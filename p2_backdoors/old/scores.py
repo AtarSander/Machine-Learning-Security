@@ -9,7 +9,7 @@ import os
 import torch
 
 from data import RESULTS_DIR, SHADOW_LABELS, TRAIN_LABELS, test_model_ids
-from evaluate import clean_acc_correlation, evaluate_detector, evaluate_train, subtract_model_median
+from .evaluate import clean_acc_correlation, evaluate_detector, evaluate_train, subtract_model_median
 from model import N_CLASSES
 
 CLASS_COLUMNS = [f"c{c:02d}" for c in range(N_CLASSES)]

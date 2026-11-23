@@ -1,74 +1,35 @@
-# Datasets, weights and detector results stay local; only the small shadows/labels.csv is tracked.
-# Anchored with "/" so each entry matches only the top-level folder.
-/train/
-/test/
-/train_labels.csv
-/outputs/
-*.pt
-*.pth
-/clean/
-/shadows/models/
-/results/
+# Ready solution and original task templates are published.
+# Keep experiments, local guidance, datasets, outputs and the old uv.lock local.
+/*
+!/.gitignore
+!/core.py
+!/run.py
+!/config.yaml
+!/pyproject.toml
+!/README.md
+!/LICENSE
+!/data.py
+!/model.py
+!/shadows/
+/shadows/*
+!/shadows/labels.csv
 
-# macOS
-.DS_Store
+# Only the fixed-budget scanner and its base class/license are runtime dependencies.
+!/optimizer.py
+!/third_party/
+/third_party/*
+!/third_party/k_arm/
+/third_party/k_arm/*
+!/third_party/k_arm/Balanced_Scanner.py
+!/third_party/k_arm/K_Arm_Scanner.py
+!/third_party/k_arm/LICENSE
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-dist/
-develop-eggs/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-pip-wheel-metadata/
-MANIFEST
-
-# Virtual environments
-.venv/
-venv/
-env/
-ENV/
-
-# Testing / coverage
-.pytest_cache/
-.coverage
-.coverage.*
-htmlcov/
-.tox/
-.nox/
-.hypothesis/
-coverage.xml
-
-# Type checkers / linters
-.ruff_cache/
-.mypy_cache/
-.pytype/
-.pyre/
-
-# Notebooks
-.ipynb_checkpoints/
-
-# Environment / secrets
-.env
-.env.*
-
-# Editors
-.idea/
-.vscode/
-*.swp
-
-# Local data folder
-data/
+# Original task scripts; data/model stay at the project root.
+!/old/
+/old/*
+!/old/evaluate.py
+!/old/scores.py
+!/old/detectors.py
+!/old/run_detector.py
+!/old/make_shadows.py
+!/old/triggers.py

@@ -15,7 +15,7 @@ from data import (
     split_ab,
 )
 from model import N_CLASSES
-from triggers import blend, color_filter, patch, sig
+from .triggers import blend, color_filter, patch, sig
 
 N_MODELS = 80
 CLEAN_FRACTION = 0.5

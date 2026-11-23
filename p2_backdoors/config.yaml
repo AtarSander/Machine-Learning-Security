@@ -1,0 +1,48 @@
+defaults:
+  - _self_
+  - override hydra/job_logging: disabled
+  - override hydra/hydra_logging: disabled
+models_dir: ???
+clean_dir: ???
+output_dir: ???
+device: cpu
+classes: 20
+cpu_threads: 4
+transfer_batch: 16
+seeds:
+  split: 0
+  model: 101
+  optimization: 201
+  numpy: 301
+  python: 401
+  source_multiplier: 1000003
+  target_multiplier: 10007
+optimizer:
+  steps: 100
+  lr: 0.1
+  asr: 0.99
+  init_cost: 0.001
+  patience: 5
+  cost_multiplier: 1.5
+  epsilon: 0.0000001
+  # Required by the preserved scanner interface; allocation remains fixed.
+  regularization: l1
+  reset_cost_to_zero: true
+  single_color_opt: true
+  rounds: 60
+  warmup_rounds: 2
+  epsilon_for_bandits: 0.3
+  beta: 10000
+  early_stop: false
+  early_stop_threshold: 1
+  early_stop_patience: 10
+scoring:
+  mad_scale: 1.4826
+  bonus_threshold: 0.8
+  bonus: 1.0
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false

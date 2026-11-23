@@ -3,7 +3,7 @@ import time
 
 import torch
 
-import detectors
+from . import detectors
 from data import (
     RESULTS_DIR,
     SHADOW_LABELS,
@@ -16,7 +16,7 @@ from data import (
     split_ab,
     test_model_ids,
 )
-from evaluate import (
+from .evaluate import (
     clean_acc_correlation,
     evaluate_detector,
     evaluate_train,
@@ -26,7 +26,7 @@ from evaluate import (
     subtract_model_median,
 )
 from model import N_CLASSES
-from scores import check_submission, read_scores, write_scores
+from .scores import check_submission, read_scores, write_scores
 
 DETECTOR = "neg_clean_acc"  # a key of DETECTORS
 # "shadows": all valid shadows, "dev": DEV_SHADOWS only, "train": the 6 organizer train models,
